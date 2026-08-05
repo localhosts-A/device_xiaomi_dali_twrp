@@ -1,0 +1,30 @@
+diff --git a/bootable/recovery/gui/action.cpp b/bootable/recovery/gui/action.cpp
+index b0bcd70..473edb5 100644
+--- a/bootable/recovery/gui/action.cpp
++++ b/bootable/recovery/gui/action.cpp
+@@ -2153,6 +2153,7 @@ int GUIAction::adbsideload(std::string arg __unused)
+ 		TWFunc::Toggle_MTP(mtp_was_enabled);
+ 		reinject_after_flash();
+ 		operation_end(ret);
++		gui_changePage("main");
+ 	}
+ 	return 0;
+ }
+diff --git a/bootable/recovery/gui/gui.cpp b/bootable/recovery/gui/gui.cpp
+index 71bbc96..fd8c092 100644
+--- a/bootable/recovery/gui/gui.cpp
++++ b/bootable/recovery/gui/gui.cpp
+@@ -603,6 +603,13 @@ static void ors_command_read()
+ 				DataManager::SetValue("tw_action_param", command);
+ 				// ...and switch back to the current page when finished
+ 				std::string currentPage = PageManager::GetCurrentPage();
++				const bool is_sideload_command =
++						strncmp(command, "sideload", 8) == 0 &&
++						(command[8] == '\0' || command[8] == ' ' ||
++						 command[8] == '\n' || command[8] == '\r');
++				if (is_sideload_command) {
++					currentPage = "main";
++				}
+ 				DataManager::SetValue("tw_has_action2", "1");
+ 				DataManager::SetValue("tw_action2", "page");
+ 				DataManager::SetValue("tw_action2_param", currentPage);

@@ -1,0 +1,180 @@
+on early-init
+
+
+
+
+
+
+    # Allow Format Data to proceed without unmapping the logical vendor
+    # partition (see patches/recovery/0007).
+    setprop of.skip_format_pending_merge 1
+    # Modules live in the Recovery ramdisk; do not let KernelModuleLoader
+    # mount the real /vendor for module loading. This keeps the ramdisk HAL
+    # closure visible and labels correct until manual mounts are requested.
+    setprop of.skip_vendor_module_mount 1
+    # keystore2 aborts until KeyMint is up; keep it stopped and start it only
+    # after the crypto HAL chain is running.
+    stop keystore2
+    restorecon /system/bin/hw/android.hardware.boot-service.mtk_recovery
+    mkdir /odm 0755 root root
+    mkdir /usb_otg 0755 root root
+    mkdir /mnt/vendor 0755 root root
+    mkdir /mnt/vendor/persist 0755 root root
+    # Recovery has no mounted /data before FBE unlock. Keep MITEe's official
+    # working path in the ramdisk rootfs until the real data filesystem mounts.
+    mkdir /data/vendor 0755 system system
+    mkdir /data/vendor/mitee 0755 system system
+    restorecon_recursive /data/vendor/mitee
+    # Recovery only needs the module dependency closure; prune the platform's
+    # extra modules before KernelModuleLoader copies /lib/modules to tmpfs.
+    exec u:r:recovery:s0 root root -- /system/bin/sh /system/bin/dali-prune-modules.sh
+    mount_all /system/etc/fstab.dali.persist --early
+    restorecon_recursive /mnt/vendor/persist
+
+on property:servicemanager.ready=true
+    start vendor.boot-default
+
+service tee-supplicant /vendor/bin/tee-supplicant
+    class core
+    user system
+    group system secure_element nfc
+    capabilities SYS_RAWIO
+    disabled
+    setenv LD_LIBRARY_PATH /system/lib64:/vendor/lib64:/odm/lib64:/vendor/lib64/hw:/odm/lib64/hw
+    setenv LD_BIND_NOW 1
+
+service vendor.keymint-mitee /vendor/bin/hw/android.hardware.security.keymint@3.0-service.mitee
+    class early_hal
+    user system
+    group system drmrpc
+    disabled
+    # Keep private security libraries in vendor while using Recovery Binder.
+    setenv LD_CONFIG_FILE /system/etc/ld.config.dali-crypto.txt
+    setenv LD_LIBRARY_PATH /odm/lib64:/vendor/lib64:/vendor/lib64/hw:/vendor/lib64/egl
+    setenv LD_BIND_NOW 1
+
+service vendor.gatekeeper_mitee /vendor/bin/hw/android.hardware.gatekeeper-service.mitee
+    class hal
+    user system
+    group system
+    disabled
+    setenv LD_CONFIG_FILE /system/etc/ld.config.dali-crypto.txt
+    setenv LD_LIBRARY_PATH /odm/lib64:/vendor/lib64:/vendor/lib64/hw:/vendor/lib64/egl
+    setenv LD_BIND_NOW 1
+
+service vendor.weaver_nxp /vendor/bin/hw/android.hardware.weaver-service.nxp
+    class hal
+    user 2902
+    group system drmrpc
+    capabilities WAKE_ALARM
+    disabled
+    setenv LD_LIBRARY_PATH /system/lib64:/vendor/lib64:/odm/lib64:/vendor/lib64/hw:/odm/lib64/hw
+    setenv LD_BIND_NOW 1
+
+service vendor.secure_element_hal_service /vendor/bin/hw/vendor.xiaomi.hardware.secure_element-service
+    class early_hal
+    user system
+    group system secure_element nfc
+    disabled
+    setenv LD_LIBRARY_PATH /system/lib64:/vendor/lib64:/odm/lib64:/vendor/lib64/hw:/odm/lib64/hw
+    setenv LD_BIND_NOW 1
+
+on property:twrp.modules.loaded=true
+    wait /sys/class/touch/touch_dev/enable_touch_raw 5
+    write /sys/class/touch/touch_dev/enable_touch_raw 0
+    trigger dali_vendor_runtime
+
+on dali_vendor_runtime
+    # Recovery's CPIO files initially carry rootfs labels. Vendor HALs link
+    # through /system, so apply the generated Recovery file contexts to the
+    # directories they actually use (bin/sh, the lib closure, linker config).
+    restorecon_recursive /system/bin
+    restorecon_recursive /system/lib64
+    restorecon_recursive /system/etc
+    # The HAL closure ships inside the recovery ramdisk at /vendor/{bin,
+    # lib64,mitee}, so Recovery does not mount the logical vendor partition.
+    # KernelModuleLoader mounts it only transiently for module loading; wait
+    # for that unmount, then relabel the rootfs closure before the HAL chain
+    # starts (exec/read denials otherwise abort keymint/gatekeeper).
+    exec_background u:r:recovery:s0 -- /system/bin/sh /system/bin/dali-vendor-hal-relabel.sh
+    wait /tmp/dali-vendor-hal-relabeled 15
+    # Label the ramdisk closure as init (recovery-domain restorecon is denied).
+    restorecon_recursive /vendor/bin
+    restorecon_recursive /vendor/lib64
+    restorecon_recursive /vendor/mitee
+    # Detach any real vendor/odm mounts TWRP left before the HAL chain starts.
+    exec_background u:r:recovery:s0 -- /system/bin/sh /system/bin/dali-vendor-detach.sh
+    wait /tmp/dali-vendor-detached 10
+    # ODM firmware ships in the ramdisk too; label the rootfs copy (ODM is
+    # detached by now, so restorecon only touches the small ramdisk dir).
+    restorecon_recursive /odm
+    wait /vendor/bin/hw/android.hardware.security.keymint@3.0-service.mitee 10
+    wait /vendor/bin/hw/android.hardware.gatekeeper-service.mitee 10
+    wait /vendor/bin/hw/android.hardware.weaver-service.nxp 10
+    wait /vendor/bin/hw/vendor.xiaomi.hardware.secure_element-service 10
+    chmod 0660 /dev/tee0
+    chmod 0660 /dev/teepriv0
+    chown system system /dev/tee0
+    chown system system /dev/teepriv0
+    chmod 0660 /dev/rpmb0
+    chmod 0660 /dev/mmcblk0rpmb
+    chmod 0660 /dev/0:0:0:49476
+    chmod 0660 /dev/st54spi
+    chmod 0660 /dev/ufs-bsg0
+    chown system system /dev/rpmb0
+    chown system system /dev/mmcblk0rpmb
+    chown system system /dev/0:0:0:49476
+    chown nfc nfc /dev/st54spi
+    chown system system /dev/ufs-bsg0
+    chmod 0666 /dev/kmsg
+    wait /dev/p73 5
+    restorecon /dev/p73
+    chmod 0660 /dev/p73
+    chown nfc nfc /dev/p73
+    wait /vendor/bin/tee-supplicant 10
+    # Mount ODM briefly so KeyMint can load its TA for upgraded key blobs.
+    exec_background u:r:recovery:s0 -- /system/bin/sh /system/bin/dali-odm-mount.sh
+    wait /odm/etc/build.prop 5
+    # Start the HAL chain before potentially slow persist restorecon.
+    # Apply the KeyMint SPL ceiling synchronously (no mounts), then read the
+    # installed ROM SPL in the background: mounting the super logical volumes
+    # is not on the decryption critical path.
+    # KeyMint SPL ceiling (merged into rc from dali-keymint-spl.sh).
+    setprop ro.build.version.security_patch 2127-12-01
+    setprop ro.vendor.build.security_patch 2127-12-01
+    exec_background u:r:recovery:s0 root root -- /system/bin/sh /system/bin/dali-spl-override.sh
+    exec u:r:recovery:s0 root root -- /system/bin/sh /system/bin/dali-ensure-tee.sh
+    setprop vendor.teefs_state ready
+
+on property:twrp.modules.loaded=true && property:vendor.teefs_state=ready
+    # libbinder lives in the Recovery ramdisk at /system/lib64 (no
+    # /system_root mount exists); wait on the real path, then start the whole
+    # crypto HAL chain in parallel. Keystore2 still waits for KeyMint.
+    wait /system/lib64/libbinder.so 10
+    start vendor.keymint-mitee
+    start vendor.gatekeeper_mitee
+    start vendor.weaver_nxp
+    start vendor.secure_element_hal_service
+    # Persist relabeling is not on the decryption critical path.
+    exec_background u:r:recovery:s0 -- /system/bin/sh /system/bin/dali-persist-label.sh
+
+on property:twrp.modules.loaded=true && property:init.svc.vendor.keymint-mitee=running
+    start keystore2
+
+on property:twrp.modules.loaded=true && property:init.svc.vendor.gatekeeper_mitee=running && property:init.svc.vendor.weaver_nxp=running
+    start vendor.secure_element_hal_service
+
+on property:twrp.modules.loaded=true && property:init.svc.vendor.secure_element_hal_service=running
+    start se_omapi
+
+# OrangeFox may remount vendor/odm for ROM info after the HAL chain already
+# loaded from the ramdisk closure. Detach those logical mounts once startup
+# finishes so they are free for OTA snapshot handling; manual Mount-page
+# mounts made after this point are left alone.
+on property:orangefox.postinit.status=1
+    exec_background u:r:recovery:s0 -- /system/bin/sh /system/bin/dali-vendor-detach.sh
+    exec_background u:r:recovery:s0 -- /system/bin/sh /system/bin/dali-vendor-hal-relabel.sh
+    exec_background u:r:recovery:s0 -- /system/bin/sh /system/bin/dali-log-persist.sh
+    start tee-supplicant
+
+on property:init.svc.recovery=running

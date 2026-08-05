@@ -1,0 +1,13 @@
+diff --git a/payload_consumer/delta_performer.cc b/payload_consumer/delta_performer.cc
+--- a/payload_consumer/delta_performer.cc
++++ b/payload_consumer/delta_performer.cc
+@@ -408,4 +408,6 @@ bool DeltaPerformer::CheckSPLDowngrade() {
+   const auto new_spl = manifest_.security_patch_level();
+   const auto current_spl =
+-      android::base::GetProperty("ro.build.version.security_patch", "");
++      android::base::GetProperty(
++          "of.installed_os_spl",
++          android::base::GetProperty("ro.build.version.security_patch", ""));
+   if (current_spl.empty()) {
+     LOG(WARNING) << "Failed to get ro.build.version.security_patch, unable to "
+                     "determine if this OTA is a SPL downgrade. Assuming this "

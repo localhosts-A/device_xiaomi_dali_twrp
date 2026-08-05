@@ -1,0 +1,8 @@
+# The C updater helper remains in the recovery domain.
+allow recovery block_device:dir mounton;
+allow recovery block_device:blk_file mounton;
+allow recovery loop_control_device:chr_file { getattr open ioctl };
+allowxperm recovery loop_control_device:chr_file ioctl LOOP_CTL_GET_FREE;
+allow recovery loop_device:blk_file { getattr open read write ioctl };
+allowxperm recovery loop_device:blk_file ioctl { LOOP_SET_FD LOOP_SET_STATUS64 LOOP_CLR_FD };
+allow recovery tmpfs:lnk_file { create unlink getattr read };

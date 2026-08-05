@@ -1,0 +1,374 @@
+<?xml version="1.0"?>
+<recovery>
+	<styles>
+		<style name="nav_panel">
+			<font resource="Secondary-navbar" color="%accent%"/>
+		</style>
+		<style name="nav_panel_d">
+			<font resource="Secondary-navbar" color="%text_action%"/>
+		</style>
+		<style name="nav_panel_btn">
+			<image resource="nav_empty" highlightresource="nav_hl"/>
+		</style>
+
+		<style name="nb_btn">
+			<image resource="nb_empty" highlightresource="nb_hl"/>
+		</style>
+		
+		<style name="tab_btn">
+			<fill color="%transparent%"/>
+			<font resource="Secondary" color="%text_dark%" highlightcolor="#46494C"/>
+		</style>
+
+		<style name="tab_btn_hl">
+			<fill color="%transparent%"/>
+			<font resource="Secondary" color="%accent%"/>
+		</style>
+		
+		<style name="tab">
+			<image resource="tab_hl"/>
+		</style>
+
+		<style name="text_ab_title">
+			<font resource="Secondary-title" color="%actbar_color%"/>
+		</style>
+		
+		<style name="text_ab_title_ota">
+			<font resource="Secondary-title" color="%text%"/>
+		</style>
+
+		<style name="text_ab_switch_on">
+			<font resource="Secondary-title" color="%text_hl_btn%"/>
+		</style>
+		<style name="text_ab_switch_off">
+			<font resource="Secondary-title" color="%disabled_text%"/>
+		</style>
+		
+		<style name="text_ab_subtitle">
+			<font resource="Secondary" color="%actbar_color%"/>
+		</style>
+
+		<style name="text_ab_subtitle_lim">
+			<limit length="36"/>
+			<font resource="Secondary" color="%actbar_color%"/>
+		</style>
+
+		<style name="text_power_card">
+			<font resource="caption" color="%text%"/>
+		</style>
+
+		<style name="text_ab_subtitle_orange">
+			<font resource="Secondary" color="#ed6f02"/>
+		</style>
+		
+		<style name="about_name">
+			<font resource="font_l" color="%text%"/>
+		</style>
+		
+		<style name="about_info">
+			<font resource="body1" color="%text_status%"/>
+		</style>
+
+		<style name="text_dlg_title">
+			<font resource="Secondary-title" color="%text%"/>
+		</style>
+
+		<style name="text_input_fail">
+			<font resource="input_fail" color="%text_fail%"/>
+		</style>
+
+		<style name="text_status">
+			<font resource="status" color="%text_status%"/>
+		</style>
+
+		<style name="text_body1">
+			<font resource="body1" color="%text%"/>
+		</style>
+
+		<style name="text_body1_hl">
+			<font resource="body1" color="%actbar_color%"/>
+		</style>
+
+		<style name="text_body1_dark">
+			<font resource="caption" color="%text%"/>
+		</style>
+
+		<style name="text_body2">
+			<font resource="body2" color="%text%"/>
+		</style>
+
+		<style name="text_body2_dark">
+			<font resource="body2" color="%text_dark%"/>
+		</style>
+
+		<style name="text_body2_hl">
+			<font resource="body2" color="%text%"/>
+		</style>
+
+		<style name="text_body2_fail">
+			<font resource="body2" color="%text_fail%"/>
+		</style>
+
+		<style name="caption">
+			<font resource="caption" color="%text%"/>
+		</style>
+
+		<style name="caption_hl">
+			<font resource="caption" color="%accent%"/>
+		</style>
+
+		<style name="menu_text">
+			<font resource="menu" color="%text%"/>
+		</style>
+
+		<style name="menu_btn">
+			<highlight color="%highlight_color%" />
+			<fill color="%transparent%"/>
+		</style>
+		
+		<style name="menu_btn_sort">
+			<highlight color="%highlight_color_full%" />
+			<fill color="%transparent%"/>
+		</style>
+
+		<style name="bs_btn">
+			<highlight color="%highlight_color_full%"/>
+			<fill color="%transparent%"/>
+		</style>
+
+		<style name="btn_raised">
+			<highlight color="%highlight_color%"/>
+			<font resource="Secondary" color="%text%"/>
+			<image resource="btn_raised"/>
+		</style>
+
+		<style name="btn_raised_warn">
+			<highlight color="%highlight_color%"/>
+			<font resource="Secondary" color="#FFFFFF"/>
+			<image resource="btn_raised_warn"/>
+		</style>
+
+		<style name="btn_raised_hl">
+			<highlight color="%highlight_color%"/>
+			<font resource="Secondary" color="%text_hl_btn%"/>
+			<image resource="btn_raised_hl"/>
+		</style>
+
+		<style name="btn_flat_qw">
+			<highlight color="%highlight_color%"/>
+			<font resource="Secondary" color="%accent%"/>
+			<image resource="btn_flat_qw"/>
+		</style>
+
+		<style name="btn_dlg">
+			<highlight color="%highlight_color%"/>
+			<font resource="Secondary" color="%text_menu%"/>
+			<image resource="db_empty" highlightresource="db_hl" />
+		</style>
+
+		<style name="btn_dlg_hl">
+			<highlight color="%highlight_color%"/>
+			<font resource="Secondary" color="%accent%"/>
+			<image resource="db_empty" highlightresource="db_hl" />
+		</style>
+
+		<style name="btn_about_credits">
+			<highlight color="#FFFFFF66"/>
+			<font resource="Secondary" color="%accent%"/>
+			<image resource="db_empty" highlightresource="db_hl" />
+		</style>
+
+		<style name="settingslist">
+			<highlight color="%highlight_color_full%"/>
+			<background color="%background%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<icon selected="checkbox_true" unselected="checkbox_false"/>
+			<iconsize w="%col1_x_caption%" h="90" padding="25"/>
+			<font resource="body1" spacing="%fileselector_spacing%" color="%text%" />
+		</style>
+
+		<style name="settingslist_group">
+			<highlight color="%highlight_color_full%"/>
+			<group color="%groupitems_clr%"/>
+			<padding top="40" bottom="40"/>
+			<background color="%background%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<icon selected="checkbox_true" unselected="checkbox_false"/>
+			<iconsize w="%col1_x_caption%" h="90" padding="25"/>
+			<font resource="body1" spacing="%fileselector_spacing%" color="%text%" />
+		</style>
+
+		<style name="checkbox">
+			<image checked="checkbox_true" unchecked="checkbox_false"/>
+			<font resource="body1" spacing="%fileselector_spacing%" color="%text%" />
+		</style>
+
+		<style name="radiobox_group">
+			<group color="%groupitems_clr%"/>
+			<padding top="40" bottom="40"/>
+			<background color="%background%"/>
+			<highlight color="%highlight_color_full%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<icon selected="radio_true" unselected="radio_false" />
+			<iconsize w="%col1_x_caption%" h="90" padding="25"/>
+			<font resource="body1" spacing="%fileselector_spacing%" color="%text%" />
+		</style>
+		
+		<style name="listbox">
+			<background color="%background%"/>
+			<highlight color="%highlight_color_full%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<icon selected="radio_true" unselected="radio_false" />
+			<iconsize w="%col1_x_caption%" h="90" padding="25"/>
+			<font resource="body1" spacing="%fileselector_spacing%" color="%text%" />
+		</style>
+		
+		<style name="textbox">
+			<background color="%background%"/>
+			<font resource="fixed" spacing="1" color="%text%"/>
+		</style>
+		
+		<style name="btn_list">
+			<background color="%background%"/>
+			<highlight color="%highlight_color_full%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<iconsize w="216" h="%bl_h1%" padding="24"/>
+			<font resource="button" spacing="%fileselector_spacing%" color="%text_menu%"/>
+		</style>
+
+		<style name="group_list">
+			<background color="%background%"/>
+			<group arrowresource="arrow_r" color="%groupitems_clr%"/>
+			<highlight color="%highlight_color_full%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<iconsize w="216" h="%bl_h1%" padding="24"/>
+			<font resource="button" spacing="%fileselector_spacing%" color="%text_menu%"/>
+		</style>
+
+		<style name="group_list_flat">
+			<background color="%background%"/>
+			<group color="%groupitems_clr%"/>
+			<highlight color="%highlight_color_full%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<iconsize w="216" h="%bl_h1%" padding="24"/>
+			<font resource="button" spacing="%fileselector_spacing%" color="%text_menu%"/>
+		</style>
+
+		<style name="partitionlist">
+			<background color="%background%"/>
+			<group color="%groupitems_clr%"/>
+			<padding top="40" bottom="40"/>
+			<highlight color="%highlight_color_full%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<icon selected="checkbox_true" unselected="checkbox_false" />
+			<iconsize w="%col1_x_caption%" h="90" padding="25"/>
+			<font resource="body1" spacing="%fileselector_spacing%" color="%text%" />
+		</style>
+
+		<style name="partitionlist_dialog">
+			<background color="%background%"/>
+			<group color="%groupitems_clr%"/>
+			<padding top="40" bottom="40"/>
+			<highlight color="%highlight_color_full%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<icon selected="radio_true" unselected="radio_false" />
+			<font resource="body1" spacing="%fileselector_spacing%" color="%text_menu%"/>
+			<iconsize w="216" h="%bl_h1%" padding="24"/>
+		</style>
+
+		<style name="partitionlist_radio">
+			<background color="%background%"/>
+			<group color="%groupitems_clr%"/>
+			<padding top="40" bottom="40"/>
+			<highlight color="%highlight_color_full%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<icon selected="radio_true" unselected="radio_false" />
+			<iconsize w="%col1_x_caption%" h="90" padding="25"/>
+			<font resource="body1" spacing="%fileselector_spacing%" color="%text%" />
+		</style>
+
+		<style name="fileselector_b">
+			<highlight color="%highlight_color_full%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<background color="%background%" />
+			<exicon up="up_icon" link="link_icon" block="block_icon"  zip="zip_icon" img="img_icon" txt="txt_icon" png="png_icon" />
+			<iconsize w="216" h="168" padding="0" bg="fs_bg_big" />
+			<font resource="body2" spacing="%fileselector_spacing%" color="%text%" />
+		</style>
+
+		<style name="fileselector_s">
+			<highlight color="%highlight_color_full%"/>
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%" />
+			<background color="%background%" />
+			<exicon up="up_icon_small" link="link_icon_small" block="block_icon_small" zip="zip_icon_small" img="img_icon_small" txt="txt_icon_small" png="png_icon_small" />
+			<iconsize w="128" h="96" padding="-4" />
+			<font resource="body2" spacing="%fileselector_spacing%" color="%text%" />
+		</style>
+
+		<style name="terminal">
+			<fastscroll rectcolor="%accent%" w="%fastscroll_w%" rectw="%fastscroll_rectw%" recth="%fastscroll_recth%"/>
+			<background color="%background%"/>
+			<font resource="fixed" spacing="3" color="%text%"/>
+		</style>
+		
+		<style name="slider_action">
+			<resource base="slider_classic" used="slider_classic" touch="handle_h_classic"/>
+		</style>
+		
+		<style name="console">
+			<color foreground="%text%" background="%background%" scroll="%background%"/>
+			<font resource="body1"/>
+		</style>	
+		<style name="floating_btn">
+			<image resource="fab" highlightresource="fab_hl"/>
+		</style>	
+		<style name="input">
+			<background color="%background%"/>
+			<cursor color="%text%" hasfocus="1" width="%input_cursor_width%"/>
+			<font resource="body1" color="%text%"/>
+		</style>	
+		<style name="slidervalue">
+			<resource background="slider_used" handle="handle" handlehover="handle_h"/>
+			<font resource="caption" color="%text%"/>
+			<colors line="%text_dark%" slider="%accent%"/>
+			<dimensions lineh="%slidervalue_lineh%" linepadding="%slidervalue_padding%" sliderw="%slidervalue_sliderw%" sliderh="%slidervalue_sliderh%"/>
+		</style>
+
+		<style name="power_card">
+			<image resource="power_card"/>
+		</style>
+		<style name="actionbar">
+			<image resource="actionbar_btn" highlightresource="actionbar_btn_hl"/>
+		</style>
+		<style name="switch_on">
+			<image resource="switch_on"/>
+		</style>
+		<style name="switch_off">
+			<image resource="switch_off"/>
+		</style>
+		<style name="patternpassword">
+			<dot color="%text_dark%" activecolor="%accent%" radius="%pattern_dot_dia%"/>
+			<line color="%accent%" width="%pattern_line_w%"/>
+			<size name="tw_gui_pattern_grid_size" default="3"/>
+		</style>
+		
+		<style name="battery">
+			<dynamic dx="4" dy="8" dw="18" dh="32"
+					 img="battery_p" imgLow="battery_low_p"/>
+			<font resource="status" color="%text_status%" colorLow="#FFA244" padding="28"/>
+			<charging img="bolt" x="26" y="10"/>
+		</style>
+		<style name="battery_circle">
+			<states 100="battery100" 75="battery75" 50="battery50"
+				    25="battery25" 15="battery15" c15="battery15_good" 5="battery5"/>
+			<charging img="bolt" x="13" y="12"/>
+			<font resource="status" color="%text_status%" colorLow="#FFA244" padding="16"/>
+		</style>
+		<style name="battery_style_2">
+			<states 100="battery_android_full" 90="battery_android_6" 75="battery_android_5" 50="battery_android_4"
+			25="battery_android_3" 15="battery_android_2" c15="battery_android_1" 5="battery_android_alert"/>
+			<font resource="status" color="%text_status%" colorLow="#FFA244" padding="10"/>
+			<charging img="bolt" x="0" y="4"/>
+		</style>
+	</styles>
+</recovery>

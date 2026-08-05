@@ -1,0 +1,26 @@
+--- a/aosp/hardware_android.cc	2026-07-31 22:15:40.280591129 +0000
++++ b/aosp/hardware_android.cc	2026-07-31 22:15:40.268591158 +0000
+@@ -258,7 +258,8 @@
+ // Returns true if the device runs an userdebug build, and explicitly allows OTA
+ // downgrade.
+ bool HardwareAndroid::AllowDowngrade() const {
+-  return GetBoolProperty("ro.ota.allow_downgrade", false) &&
++  return (GetBoolProperty("ro.ota.allow_downgrade", false) ||
++          GetBoolProperty("of.allow_spl_downgrade", false)) &&
+          GetBoolProperty("ro.debuggable", false);
+ }
+ 
+--- a/payload_consumer/delta_performer.cc	2026-07-31 22:15:40.280591129 +0000
++++ b/payload_consumer/delta_performer.cc	2026-07-31 22:15:40.272591149 +0000
+@@ -416,6 +416,11 @@
+     return true;
+   }
+   if (new_spl < current_spl) {
++    if (android::base::GetBoolProperty("of.allow_spl_downgrade", false)) {
++      install_plan_->powerwash_required = true;
++      LOG(WARNING) << "SPL downgrade explicitly allowed (of.allow_spl_downgrade)";
++      return true;
++    }
+     const auto avb_state =
+         android::base::GetProperty("ro.boot.verifiedbootstate", "green");
+     if (android::base::EqualsIgnoreCase(avb_state, "green")) {

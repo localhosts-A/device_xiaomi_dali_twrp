@@ -1,0 +1,21 @@
+--- a/openrecoveryscript.cpp
++++ b/openrecoveryscript.cpp
+@@ -412,6 +412,10 @@
+ 
+ 				int wipe_cache = 0;
+ 				gui_msg("start_sideload=Starting ADB sideload feature...");
++				// The configfs gadget needs both adbd and the MTP server to be
++				// ready before the UDC is enabled; stop MTP around the sideload
++				// and restore it afterwards (same as the GUI path).
++				bool mtp_was_enabled = TWFunc::Toggle_MTP(false);
+ 
+ 				Device::BuiltinAction reboot_action = Device::REBOOT_BOOTLOADER;
+ 				ret_val = twrp_sideload("/", &reboot_action, &wipe_cache);
+@@ -428,6 +432,7 @@
+ 
+ 
+ 				property_set("ctl.start", "adbd");
++				TWFunc::Toggle_MTP(mtp_was_enabled);
+ 				gui_msg("done=Done.");
+ 			} else if (strcmp(command, "fixperms") == 0 || strcmp(command, "fixpermissions") == 0 || strcmp(command, "fixcontexts") == 0) {
+ 				ret_val = PartitionManager.Fix_Contexts();

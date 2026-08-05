@@ -1,0 +1,42 @@
+--- a/kernel_module_loader.cpp	2026-07-31 20:46:18.142146300 +0000
++++ b/kernel_module_loader.cpp	2026-07-31 20:50:15.753544872 +0000
+@@ -30,6 +30,7 @@
+ 	// check /vendor/lib/modules/N.N-gki (vendor mounted)
+ 	// check /vendor_dlkm/lib/modules (vendor_dlkm mounted)
+ 	if (android::base::GetBoolProperty(TW_MODULES_MOUNTED_PROP, false)) return true;
++	const bool skip_vendor_mount = android::base::GetBoolProperty("of.skip_vendor_module_mount", false);
+ 	int modules_loaded = 0;
+ 
+ 	LOGINFO("Attempting to load modules\n");
+@@ -90,11 +91,17 @@
+ 
+ 	if (ven) {
+ 		LOGINFO("Checking mounted /vendor\n");
+-		ven->Mount(true);
++		if (!skip_vendor_mount)
++			ven->Mount(true);
++		else
++			LOGINFO("Skipping /vendor mount for module loading (of.skip_vendor_module_mount)\n");
+ 	}
+ 	if (ven_dlkm) {
+ 		LOGINFO("Checking mounted /vendor_dlkm\n");
+-		ven_dlkm->Mount(true);
++		if (!skip_vendor_mount)
++			ven_dlkm->Mount(true);
++		else
++			LOGINFO("Skipping /vendor_dlkm mount for module loading\n");
+ 	}
+ 
+ 	for (auto&& module_dir:vendor_module_dirs) {
+@@ -106,9 +113,9 @@
+ 	if (modules_loaded >= expected_module_count) goto exit;
+ 
+ exit:
+-	if (ven)
++	if (ven && !skip_vendor_mount)
+ 		ven->UnMount(false);
+-	if (ven_dlkm)
++	if (ven_dlkm && !skip_vendor_mount)
+ 		ven_dlkm->UnMount(false, MNT_DETACH);
+ 
+ 	if (modules_loaded == 0)

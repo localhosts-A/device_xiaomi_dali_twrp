@@ -1,0 +1,22 @@
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -4698,16 +4698,18 @@ bool TWPartitionManager::Prepare_All_Super_Volumes() {
+ 	bool status = true;
+ 	std::vector<TWPartition*>::iterator iter;
+ 
+-	for (iter = Partitions.begin(); iter != Partitions.end(); iter++) {
++	for (iter = Partitions.begin(); iter != Partitions.end(); ) {
+ 		if ((*iter)->Is_Super) {
+ 			if (!Prepare_Super_Volume(*iter)) {
+ 				status = false;
+-				Partitions.erase(iter--);
++				iter = Partitions.erase(iter);
++				continue;
+ 			}
+ 			PartitionManager.Output_Partition(*iter);
+ 		}
++		iter++;
+ 	}
+ 	Update_System_Details();
+ 	return status;
+ }

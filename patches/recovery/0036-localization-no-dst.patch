@@ -1,0 +1,11 @@
+--- a/data.cpp
++++ b/data.cpp
+@@ -1261,7 +1261,7 @@
+   mPersist.SetValue(TW_TIME_ZONE_VAR, OF_DEFAULT_TIMEZONE);
+   mPersist.SetValue(TW_TIME_ZONE_GUISEL, OF_DEFAULT_TIMEZONE);
+   mPersist.SetValue(TW_TIME_ZONE_GUIOFFSET, "0");
+-  mPersist.SetValue(TW_TIME_ZONE_GUIDST, "1");
++  mPersist.SetValue(TW_TIME_ZONE_GUIDST, "0");
+   mPersist.SetValue(TW_AUTO_REFLASHTWRP_VAR, "1");
+   if (str == "dali")
+     mPersist.SetValue(TW_LK_PROTECT_VAR, "1");

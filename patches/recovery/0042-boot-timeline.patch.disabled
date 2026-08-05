@@ -1,0 +1,131 @@
+diff --git a/gui/gui.cpp b/gui/gui.cpp
+index 71bbc967..7347732a 100644
+--- a/gui/gui.cpp
++++ b/gui/gui.cpp
+@@ -604,4 +604,11 @@ static void ors_command_read()
+ 				// ...and switch back to the current page when finished
+ 				std::string currentPage = PageManager::GetCurrentPage();
++				const bool is_sideload_command =
++						strncmp(command, "sideload", 8) == 0 &&
++						(command[8] == '\0' || command[8] == ' ' ||
++						 command[8] == '\n' || command[8] == '\r');
++				if (is_sideload_command) {
++					currentPage = "main";
++				}
+ 				DataManager::SetValue("tw_has_action2", "1");
+ 				DataManager::SetValue("tw_action2", "page");
+@@ -675,4 +682,5 @@ static int runPages(const char *page_name, const int stop_on_page_done)
+ 
+ 	DataManager::SetValue("tw_loaded", 1);
++	{ struct timespec bt; clock_gettime(CLOCK_BOOTTIME, &bt); FILE* f = fopen("/tmp/boot-timeline","a"); if (f) { fprintf(f, "twrp: stage=gui-main-loop up=%lld.%03ld\n", (long long)bt.tv_sec, bt.tv_nsec/1000000); fclose(f); } }
+ 
+ 	if (DataManager::GetStrValue("of_request_switch_control_mode") == "1") {
+diff --git a/twrp.cpp b/twrp.cpp
+index c9fdc572..3c8b0d74 100644
+--- a/twrp.cpp
++++ b/twrp.cpp
+@@ -84,4 +84,16 @@ static void Print_Prop(const char *key, const char *name, void *cookie) {
+ }
+ 
++// ---- temporary boot timeline instrumentation (remove after tuning) ----
++static void bootmark(const char* stage) {
++    struct timespec bt;
++    clock_gettime(CLOCK_BOOTTIME, &bt);
++    FILE* f = fopen("/tmp/boot-timeline", "a");
++    if (f) {
++        fprintf(f, "twrp: stage=%s up=%lld.%03ld\n", stage, (long long)bt.tv_sec, bt.tv_nsec / 1000000);
++        fclose(f);
++    }
++}
++// ---- end instrumentation ----
++
+ static void Decrypt_Page(bool SkipDecryption, bool datamedia) {
+ 	// Offer to decrypt if the device is encrypted
+@@ -227,5 +239,7 @@ static void process_recovery_mode(twrpAdbBuFifo* adb_bu_fifo, bool skip_decrypti
+ 
+         // use the ROM's fingerprint?
++        bootmark("twrp-runstartup-before");
+         TWFunc::RunStartupScript();
++        bootmark("twrp-runstartup-after");
+         TWFunc::UseSystemFingerprint();
+ 	TWFunc::RunFoxScript("/system/bin/runatboot.sh", "");
+@@ -252,5 +266,7 @@ static void process_recovery_mode(twrpAdbBuFifo* adb_bu_fifo, bool skip_decrypti
+ 	android::keystore::copySqliteDb();
+ #endif
++	bootmark("twrp-decrypt-before");
+ 	Decrypt_Page(skip_decryption, datamedia);
++	bootmark("twrp-decrypt-after");
+ 
+ 	// Check for and load custom theme if present
+@@ -283,5 +299,7 @@ static void process_recovery_mode(twrpAdbBuFifo* adb_bu_fifo, bool skip_decrypti
+ 
+   	// call OrangeFox startup code
++  	bootmark("twrp-ofstartup-before");
+   	TWFunc::OrangeFox_Startup();
++  	bootmark("twrp-ofstartup-after");
+   	
+ #ifdef OF_ADVANCED_SECURITY
+@@ -420,4 +438,7 @@ static void Fox_Remove_Problematic_File() {
+ 
+ // main()
++
++
++
+ int main(int argc, char **argv) {
+ 	// avoid Android 15 QPR2 problem with rogue xml file
+@@ -427,4 +448,5 @@ int main(int argc, char **argv) {
+ 	// set by init
+ 	umask(0);
++	bootmark("twrp-main-start");
+ 
+ 	Log_Offset = 0;
+@@ -545,12 +567,16 @@ int main(int argc, char **argv) {
+ 	//PartitionManager.Fox_Set_Dynamic_Partition_Props();
+ 
++	bootmark("twrp-fstab-done");
+ 	// start the UI
+ 	printf("Starting the UI...\n");
+ 	gui_init();
++	bootmark("twrp-gui-init-done");
+ 
+ 	if (!startup.Get_Fastboot_Mode()) PartitionManager.Setup_Fstab_Partitions(true);
++	bootmark("twrp-setup-fstab-done");
+ 
+ 	// Load up all the resources
+ 	gui_loadResources();
++	bootmark("twrp-gui-resources-done");
+ 
+ 	std::string value;
+@@ -633,5 +659,21 @@ int main(int argc, char **argv) {
+ #ifndef FOX_ALLOW_EARLY_SETTINGS_LOAD
+ 	// Language
+-	PageManager::LoadLanguage(DataManager::GetStrValue("tw_language"));
++	std::string gui_language = DataManager::GetStrValue("tw_language");
++	// Dali: default to zh_CN whenever no explicit settings store exists yet.
++	if (gui_language.empty() || (gui_language == "en" && !TWFunc::Path_Exists(Fox_Settings_Path + "/.foxs")))
++		gui_language = "zh_CN";
++	// Dali: force UTC+8 (TAIST-8, DST off) when the store has no zone yet or
++	// still carries the stock OrangeFox CET default. The settings page keeps
++	// the four timezone values in sync, so set the GUI selection pair too.
++	{
++		std::string tz = DataManager::GetStrValue(TW_TIME_ZONE_VAR);
++		if (tz.empty() || tz == "CET-1;CEST,M3.5.0,M10.5.0") {
++			DataManager::SetValue(TW_TIME_ZONE_VAR, "TAIST-8");
++			DataManager::SetValue(TW_TIME_ZONE_GUISEL, "TAIST-8;TAIDT");
++			DataManager::SetValue(TW_TIME_ZONE_GUIOFFSET, "0");
++			DataManager::SetValue(TW_TIME_ZONE_GUIDST, "0");
++		}
++	}
++	PageManager::LoadLanguage(gui_language);
+ 	GUIConsole::Translate_Now();
+ #endif
+@@ -645,5 +687,8 @@ int main(int argc, char **argv) {
+ 		PageManager::RequestReload();
+ 		gui_startPage("reapply_settings", 1, 0);
+-	} else gui_start();
++	} else {
++		bootmark("twrp-pre-gui-start");
++		gui_start();
++	}
+ 
+ 	delete adb_bu_fifo;

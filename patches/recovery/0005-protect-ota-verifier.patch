@@ -1,0 +1,108 @@
+diff --git a/bootable/recovery/lk_protection_exec.c b/bootable/recovery/lk_protection_exec.c
+index ff3dea9..27f9b40 100644
+--- a/bootable/recovery/lk_protection_exec.c
++++ b/bootable/recovery/lk_protection_exec.c
+@@ -37,6 +37,8 @@ extern char** environ;
+ #define LK_B_NAME "lk_b"
+ #define LK_A_RAW_DEVICE "/dev/block/sdc36"
+ #define LK_B_RAW_DEVICE "/dev/block/sdc70"
++/* The official Dali OTA LK target is 995 blocks (4,075,520 bytes). */
++#define LK_VIRTUAL_SIZE UINT64_C(4075520)
+ #define PRELOADER_A_NAME "preloader_raw_a"
+ #define PRELOADER_B_NAME "preloader_raw_b"
+ /* The official Dali OTA preloader_raw target is 253 blocks (1,036,288 bytes). */
+@@ -119,7 +121,10 @@ static bool WriteFully(int fd, const void* buffer, size_t size) {
+     return true;
+ }
+ 
+-static bool CopyBlockDevice(const char* source, const char* destination, uint64_t* size) {
++static bool CopyBlockDevice(const char* source,
++                            const char* destination,
++                            uint64_t requested_size,
++                            uint64_t* size) {
+     int source_fd = -1;
+     int destination_fd = -1;
+     bool result = false;
+@@ -141,9 +146,14 @@ static bool CopyBlockDevice(const char* source, const char* destination, uint64_
+         ReportErrno("could not create an LK temporary backing file");
+         goto done;
+     }
++    if (requested_size == 0 || requested_size > block_size) {
++        errno = EINVAL;
++        ReportErrno("the LK virtual size exceeds the source block device");
++        goto done;
++    }
+     uint64_t copied = 0;
+-    while (copied < block_size) {
+-        const uint64_t remaining = block_size - copied;
++    while (copied < requested_size) {
++        const uint64_t remaining = requested_size - copied;
+         const size_t chunk = remaining < sizeof(buffer) ? (size_t)remaining : sizeof(buffer);
+         if (!ReadFully(source_fd, buffer, chunk) || !WriteFully(destination_fd, buffer, chunk)) {
+             ReportErrno("could not copy an LK source block device");
+@@ -155,7 +165,7 @@ static bool CopyBlockDevice(const char* source, const char* destination, uint64_
+         ReportErrno("could not synchronize an LK temporary backing file");
+         goto done;
+     }
+-    *size = block_size;
++    *size = requested_size;
+     result = true;
+ 
+ done:
+@@ -520,8 +530,8 @@ static bool SetupContext(struct lk_context* context) {
+                    context->temporary_root, "preloader_a.img") ||
+         !BuildPath(context->preloader_b.backing_path, sizeof(context->preloader_b.backing_path),
+                    context->temporary_root, "preloader_b.img") ||
+-        !CopyBlockDevice(context->raw_lk_a, context->lk_a.backing_path, &lk_a_size) ||
+-        !CopyBlockDevice(context->raw_lk_b, context->lk_b.backing_path, &lk_b_size) ||
++        !CopyBlockDevice(context->raw_lk_a, context->lk_a.backing_path, LK_VIRTUAL_SIZE, &lk_a_size) ||
++        !CopyBlockDevice(context->raw_lk_b, context->lk_b.backing_path, LK_VIRTUAL_SIZE, &lk_b_size) ||
+         lk_a_size != lk_b_size) {
+         ReportMessage("could not create matched LK temporary backing images");
+         goto fail;
+@@ -612,6 +622,10 @@ int main(int argc, char* argv[]) {
+         return 1;
+     }
+     if (updater_pid == 0) {
++        if (setenv("OF_LK_PROTECTION", "1", 1) != 0) {
++            ReportErrno("could not enable protected boot-chain verification mode");
++            _exit(126);
++        }
+         execve(argv[2], &argv[2], environ);
+         ReportErrno("could not execute the protected updater");
+         _exit(127);
+diff --git a/system/update_engine/payload_consumer/filesystem_verifier_action.cc b/system/update_engine/payload_consumer/filesystem_verifier_action.cc
+index 5345085..a8b2956 100644
+--- a/system/update_engine/payload_consumer/filesystem_verifier_action.cc
++++ b/system/update_engine/payload_consumer/filesystem_verifier_action.cc
+@@ -83,6 +83,14 @@ const off_t kReadFileBufferSize = 128 * 1024;
+ constexpr float kVerityProgressPercent = 0.3;
+ constexpr float kEncodeFECPercent = 0.3;
+ 
++bool IsProtectedBootChainPartition(const InstallPlan::Partition& partition) {
++  const char* protection = std::getenv("OF_LK_PROTECTION");
++  if (protection == nullptr || std::string(protection) != "1") {
++    return false;
++  }
++  return partition.name == "lk" || partition.name == "preloader_raw";
++}
++
+ }  // namespace
+ 
+ void FilesystemVerifierAction::PerformAction() {
+@@ -489,6 +497,15 @@ void FilesystemVerifierAction::FinishPartitionHashing() {
+   switch (verifier_step_) {
+     case VerifierStep::kVerifyTargetHash:
+       if (partition.target_hash != hasher_->raw_hash()) {
++        if (IsProtectedBootChainPartition(partition) &&
++            partition.source_hash.empty()) {
++          LOG(WARNING) << "LK protection: accepting virtual target hash mismatch for full OTA partition "
++                       << partition.name << "; expected "
++                       << HexEncode(partition.target_hash) << ", actual "
++                       << HexEncode(hasher_->raw_hash());
++          partition_index_++;
++          break;
++        }
+         LOG(ERROR) << "New '" << partition.name
+                    << "' partition verification failed.";
+         if (partition.source_hash.empty()) {

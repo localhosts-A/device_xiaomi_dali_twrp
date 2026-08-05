@@ -1,0 +1,9 @@
+--- a/gui/theme/portrait_hdpi/images/SVG/About/card.svg
++++ b/gui/theme/portrait_hdpi/images/SVG/About/card.svg
+@@ -1,4 +1,4 @@
+ <?xml version="1.0" encoding="utf-8"?>
+-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 336">
+-	<path display="inline" fill="#000000" fill-opacity="1" stroke-width="23.7514" stroke-linecap="round" d="M 71.845703,48 C 58.635534,48 48,58.635534 48,71.845703 V 264.1543 C 48,277.36447 58.635534,288 71.845703,288 H 1008.1543 C 1021.3645,288 1032,277.36447 1032,264.1543 V 71.845703 C 1032,58.635534 1021.3645,48 1008.1543,48 Z M 168,72 a 96,96 0 0 1 96,96 96,96 0 0 1 -96,96 96,96 0 0 1 -96,-96 96,96 0 0 1 96,-96 z" />
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 384">
++	<path display="inline" fill="#000000" fill-opacity="1" stroke-width="23.7514" stroke-linecap="round" d="M 71.845703,48 C 58.635534,48 48,58.635534 48,71.845703 V 312.1543 C 48,325.36447 58.635534,336 71.845703,336 H 1008.1543 C 1021.3645,336 1032,325.36447 1032,312.1543 V 71.845703 C 1032,58.635534 1021.3645,48 1008.1543,48 Z M 168,72 a 96,96 0 0 1 96,96 96,96 0 0 1 -96,96 96,96 0 0 1 -96,-96 96,96 0 0 1 96,-96 z" />
+ </svg>

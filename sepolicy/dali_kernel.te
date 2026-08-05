@@ -1,0 +1,3 @@
+# Recovery's block2mtd/monitor kernel threads scan /dev/block; the base
+# kernel policy denies the search and they retry for ~10 s during boot.
+allow kernel block_device:dir search;

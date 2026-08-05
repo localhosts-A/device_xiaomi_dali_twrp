@@ -1,0 +1,129 @@
+diff --git a/gui/action.cpp b/gui/action.cpp
+index 473edb57..c739e86a 100755
+--- a/gui/action.cpp
++++ b/gui/action.cpp
+@@ -2132,7 +2132,8 @@ int GUIAction::adbsideload(std::string arg __unused)
+ 
+ 		// wait for the adb connection
+ 		Device::BuiltinAction reboot_action = Device::REBOOT_BOOTLOADER;
+-		int ret = twrp_sideload("/", &reboot_action);
++		int wipe_cache = 0;
++		int ret = twrp_sideload("/", &reboot_action, &wipe_cache);
+ 		sideload_child_pid = GetMiniAdbdPid();
+ 		DataManager::SetValue("tw_has_cancel", 0); // Remove cancel button from gui now that the zip install is going to start
+ 
+@@ -2141,7 +2142,6 @@ int GUIAction::adbsideload(std::string arg __unused)
+ 				gui_msg("need_new_adb=You need adb 1.0.32 or newer to sideload to this device.");
+ 			ret = 1; // failure
+ 		} else {
+-			int wipe_cache = 0;
+ 			int wipe_dalvik = 0;
+ 			DataManager::GetValue("tw_wipe_dalvik", wipe_dalvik);
+ 			if (wipe_cache || DataManager::GetIntValue("tw_wipe_cache"))
+diff --git a/openrecoveryscript.cpp b/openrecoveryscript.cpp
+index 304f617c..a50a8b89 100755
+--- a/openrecoveryscript.cpp
++++ b/openrecoveryscript.cpp
+@@ -411,39 +411,21 @@ int OpenRecoveryScript::run_script_file(void) {
+ 				install_cmd = -1;
+ 
+ 				int wipe_cache = 0;
+-				string result;
+-				// pid_t sideload_child_pid;
+-
+ 				gui_msg("start_sideload=Starting ADB sideload feature...");
+ 
+-				// ret_val = apply_from_adb("/", &sideload_child_pid);
+ 				Device::BuiltinAction reboot_action = Device::REBOOT_BOOTLOADER;
+-				ret_val = twrp_sideload("/", &reboot_action);
++				ret_val = twrp_sideload("/", &reboot_action, &wipe_cache);
+ 				if (ret_val != 0) {
+ 					if (ret_val == -2)
+ 						gui_err("need_new_adb=You need adb 1.0.32 or newer to sideload to this device.");
+ 					ret_val = 1; // failure
+-				} else if (TWinstall_zip(FUSE_SIDELOAD_HOST_PATHNAME, &wipe_cache) == 0) {
+-					if (wipe_cache)
+-						PartitionManager.Wipe_By_Path("/cache");
+-				} else {
+-					ret_val = 1; // failure
++				} else if (wipe_cache) {
++					PartitionManager.Wipe_By_Path("/cache");
+ 				}
+ 				PartitionManager.Unlock_Block_Partitions();
+ 				PartitionManager.Update_System_Details();
+ 				sideload = 1; // Causes device to go to the home screen afterwards
+ 
+-				pid_t sideload_child_pid = GetMiniAdbdPid();
+-				if (sideload_child_pid != 0) {
+-					LOGINFO("Signaling child sideload process to exit.\n");
+-					struct stat st;
+-					// Calling stat() on this magic filename signals the minadbd
+-					// subprocess to shut down.
+-					stat(FUSE_SIDELOAD_HOST_EXIT_PATHNAME, &st);
+-					int status;
+-					LOGINFO("Waiting for child sideload process to exit.\n");
+-					waitpid(sideload_child_pid, &status, 0);
+-				}
+ 
+ 				property_set("ctl.start", "adbd");
+ 				gui_msg("done=Done.");
+diff --git a/twrpinstall/adb_install.cpp b/twrpinstall/adb_install.cpp
+index d9a517f0..f7ef9499 100755
+--- a/twrpinstall/adb_install.cpp
++++ b/twrpinstall/adb_install.cpp
+@@ -100,7 +100,7 @@ static bool WriteStatusToFd(MinadbdCommandStatus status, int fd) {
+ 
+ // Installs the package from FUSE. Returns the installation result and whether it should continue
+ // waiting for new commands.
+-static auto AdbInstallPackageHandler(int* result) {
++static auto AdbInstallPackageHandler(int* result, int* wipe_cache) {
+   // How long (in seconds) we wait for the package path to be ready. It doesn't need to be too long
+   // because the minadbd service has already issued an install command. FUSE_SIDELOAD_HOST_PATHNAME
+   // will start to exist once the host connects and starts serving a package. Poll for its
+@@ -120,8 +120,7 @@ static auto AdbInstallPackageHandler(int* result) {
+         break;
+       }
+     }
+-    int dummy = 0;
+-    *result = TWinstall_zip(FUSE_SIDELOAD_HOST_PATHNAME, &dummy);
++    *result = TWinstall_zip(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache);
+     Fox_Post_Zip_Install(*result);
+     break;
+   }
+@@ -339,7 +338,13 @@ static void CreateMinadbdServiceAndExecuteCommands(
+   signal(SIGPIPE, SIG_DFL);
+ }
+ 
+-  int twrp_sideload(const char* install_file, Device::BuiltinAction* reboot_action) {
++int twrp_sideload(const char* install_file, Device::BuiltinAction* reboot_action,
++                  int* wipe_cache) {
++  if (wipe_cache == nullptr) {
++    LOG(ERROR) << "Missing sideload wipe_cache output";
++    return INSTALL_ERROR;
++  }
++  *wipe_cache = 0;
+ 
+   // Save the usb state to restore after the sideload operation.
+   std::string usb_state = android::base::GetProperty("sys.usb.state", "none");
+@@ -351,7 +356,7 @@ static void CreateMinadbdServiceAndExecuteCommands(
+ 
+   int install_result = INSTALL_ERROR;
+   std::map<MinadbdCommand, CommandFunction> command_map{
+-  { MinadbdCommand::kInstall, std::bind(&AdbInstallPackageHandler, &install_result) },
++  { MinadbdCommand::kInstall, std::bind(&AdbInstallPackageHandler, &install_result, wipe_cache) },
+   { MinadbdCommand::kRebootAndroid, std::bind(&AdbRebootHandler, MinadbdCommand::kRebootAndroid,
+                                               &install_result, reboot_action) },
+   { MinadbdCommand::kRebootBootloader,
+diff --git a/twrpinstall/include/twinstall/adb_install.h b/twrpinstall/include/twinstall/adb_install.h
+index 42321d4e..9769fdd6 100755
+--- a/twrpinstall/include/twinstall/adb_install.h
++++ b/twrpinstall/include/twinstall/adb_install.h
+@@ -21,5 +21,6 @@
+ // Applies a package via `adb sideload` or `adb rescue`. Returns the install result (in `enum
+ // InstallResult`). When a reboot has been requested, INSTALL_REBOOT will be the return value, with
+ // the reboot target set in reboot_action.
+-int twrp_sideload(const char* install_file, Device::BuiltinAction* reboot_action);
++int twrp_sideload(const char* install_file, Device::BuiltinAction* reboot_action,
++                  int* wipe_cache);
+ pid_t GetMiniAdbdPid();
+\ No newline at end of file

@@ -1,0 +1,143 @@
+--- a/lk_protection_exec.c
++++ b/lk_protection_exec.c
+@@ -37,6 +37,10 @@
+ #define LK_B_NAME "lk_b"
+ #define LK_A_RAW_DEVICE "/dev/block/sdc36"
+ #define LK_B_RAW_DEVICE "/dev/block/sdc70"
++#define PRELOADER_A_NAME "preloader_raw_a"
++#define PRELOADER_B_NAME "preloader_raw_b"
++/* The official Dali OTA preloader_raw target is 253 blocks (1,036,288 bytes). */
++#define PRELOADER_VIRTUAL_SIZE UINT64_C(1036288)
+ #define COPY_BUFFER_SIZE (64 * 1024)
+ 
+ struct loop_target {
+@@ -57,6 +61,8 @@
+     bool raw_lk_b_mounted;
+     struct loop_target lk_a;
+     struct loop_target lk_b;
++    struct loop_target preloader_a;
++    struct loop_target preloader_b;
+ };
+ 
+ static void ReportErrno(const char* action) {
+@@ -165,6 +171,23 @@
+     return result;
+ }
+ 
++static bool CreateZeroBacking(const char* destination, uint64_t size) {
++    int fd = open(destination, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
++    if (fd < 0) {
++        ReportErrno("could not create a boot-chain temporary backing file");
++        return false;
++    }
++    bool result = ftruncate(fd, (off_t)size) == 0 && fsync(fd) == 0;
++    if (!result) {
++        ReportErrno("could not size a boot-chain temporary backing file");
++    }
++    close(fd);
++    if (!result) {
++        unlink(destination);
++    }
++    return result;
++}
++
+ static void DetachLoop(struct loop_target* target) {
+     if (target->fd >= 0) {
+         if (ioctl(target->fd, LOOP_CLR_FD, 0) != 0 && errno != ENXIO) {
+@@ -378,6 +401,28 @@
+     return true;
+ }
+ 
++static bool CreateVirtualAlias(const char* directory, const char* alias, const char* target) {
++    char path[PATH_MAX];
++    if (!BuildPath(path, sizeof(path), directory, alias)) {
++        ReportMessage("could not construct a virtual boot-chain alias path");
++        return false;
++    }
++    struct stat status;
++    if (lstat(path, &status) == 0) {
++        ReportMessage("a real boot-chain alias already exists; refusing to shadow it");
++        return false;
++    }
++    if (errno != ENOENT) {
++        ReportErrno("could not inspect a virtual boot-chain alias");
++        return false;
++    }
++    if (symlink(target, path) != 0) {
++        ReportErrno("could not create a virtual boot-chain alias");
++        return false;
++    }
++    return true;
++}
++
+ static bool ResolveBlockTarget(const char* alias, char* target) {
+     char* resolved = realpath(alias, target);
+     if (resolved == NULL) {
+@@ -423,6 +468,8 @@
+     }
+     DetachLoop(&context->lk_b);
+     DetachLoop(&context->lk_a);
++    DetachLoop(&context->preloader_b);
++    DetachLoop(&context->preloader_a);
+     if (context->platform_shadow[0] != '\0') {
+         RemoveShadowDirectory(context->platform_shadow);
+     }
+@@ -469,6 +516,10 @@
+     }
+     if (!BuildPath(context->lk_a.backing_path, sizeof(context->lk_a.backing_path), context->temporary_root, "lk_a.img") ||
+         !BuildPath(context->lk_b.backing_path, sizeof(context->lk_b.backing_path), context->temporary_root, "lk_b.img") ||
++        !BuildPath(context->preloader_a.backing_path, sizeof(context->preloader_a.backing_path),
++                   context->temporary_root, "preloader_a.img") ||
++        !BuildPath(context->preloader_b.backing_path, sizeof(context->preloader_b.backing_path),
++                   context->temporary_root, "preloader_b.img") ||
+         !CopyBlockDevice(context->raw_lk_a, context->lk_a.backing_path, &lk_a_size) ||
+         !CopyBlockDevice(context->raw_lk_b, context->lk_b.backing_path, &lk_b_size) ||
+         lk_a_size != lk_b_size) {
+@@ -478,19 +529,37 @@
+     if (!AttachLoop(context->lk_a.backing_path, &context->lk_a) || !AttachLoop(context->lk_b.backing_path, &context->lk_b)) {
+         goto fail;
+     }
++    if (!CreateZeroBacking(context->preloader_a.backing_path, PRELOADER_VIRTUAL_SIZE) ||
++        !CreateZeroBacking(context->preloader_b.backing_path, PRELOADER_VIRTUAL_SIZE)) {
++        goto fail;
++    }
++    if (!AttachLoop(context->preloader_a.backing_path, &context->preloader_a) ||
++        !AttachLoop(context->preloader_b.backing_path, &context->preloader_b)) {
++        goto fail;
++    }
+     if (unlink(context->lk_a.backing_path) != 0 || unlink(context->lk_b.backing_path) != 0) {
+         ReportErrno("could not unlink an LK temporary backing image");
+         goto fail;
+     }
+     context->lk_a.backing_path[0] = '\0';
+     context->lk_b.backing_path[0] = '\0';
++    if (unlink(context->preloader_a.backing_path) != 0 || unlink(context->preloader_b.backing_path) != 0) {
++        ReportErrno("could not unlink a boot-chain temporary backing image");
++        goto fail;
++    }
++    context->preloader_a.backing_path[0] = '\0';
++    context->preloader_b.backing_path[0] = '\0';
+ 
+     if (!BuildPath(context->root_shadow, sizeof(context->root_shadow), context->temporary_root, "by-name") ||
+         !BuildPath(context->platform_shadow, sizeof(context->platform_shadow), context->temporary_root, "platform-by-name") ||
+         !CloneByNameDirectory(LK_ROOT_BY_NAME, context->root_shadow) ||
+         !RedirectLkAliases(context->root_shadow, context->lk_a.device_path, context->lk_b.device_path) ||
++        !CreateVirtualAlias(context->root_shadow, PRELOADER_A_NAME, context->preloader_a.device_path) ||
++        !CreateVirtualAlias(context->root_shadow, PRELOADER_B_NAME, context->preloader_b.device_path) ||
+         !CloneByNameDirectory(LK_PLATFORM_BY_NAME, context->platform_shadow) ||
+-        !RedirectLkAliases(context->platform_shadow, context->lk_a.device_path, context->lk_b.device_path)) {
++        !RedirectLkAliases(context->platform_shadow, context->lk_a.device_path, context->lk_b.device_path) ||
++        !CreateVirtualAlias(context->platform_shadow, PRELOADER_A_NAME, context->preloader_a.device_path) ||
++        !CreateVirtualAlias(context->platform_shadow, PRELOADER_B_NAME, context->preloader_b.device_path)) {
+         goto fail;
+     }
+     if (mount(context->root_shadow, LK_ROOT_BY_NAME, NULL, MS_BIND, NULL) != 0) {
+@@ -530,6 +599,8 @@
+     memset(&context, 0, sizeof(context));
+     context.lk_a.fd = -1;
+     context.lk_b.fd = -1;
++    context.preloader_a.fd = -1;
++    context.preloader_b.fd = -1;
+     if (!SetupContext(&context)) {
+         return 1;
+     }

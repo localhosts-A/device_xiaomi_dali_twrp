@@ -1,0 +1,2 @@
+# Do not declare formattable here: Recovery needs existing calibration and TEE state only.
+/dev/block/by-name/persist /mnt/vendor/persist ext4 noatime,nosuid,nodev,noauto_da_alloc,commit=1,nodelalloc wait,check

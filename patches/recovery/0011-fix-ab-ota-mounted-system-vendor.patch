@@ -1,0 +1,45 @@
+diff --git a/twrpinstall/twinstall.cpp b/twrpinstall/twinstall.cpp
+index e35572a..73fe339 100644
+--- a/twrpinstall/twinstall.cpp
++++ b/twrpinstall/twinstall.cpp
+@@ -389,6 +389,18 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+       return INSTALL_CORRUPT;
+     }
+ 
++    std::string update_binary_name(UPDATE_BINARY_NAME);
++    ZipEntry64 update_binary_entry;
++    const bool is_update_binary = FindEntry(Zip, update_binary_name, &update_binary_entry) == 0;
++    std::string ab_binary_name(AB_OTA);
++    ZipEntry64 ab_binary_entry;
++    const bool is_ab_ota = !is_update_binary && FindEntry(Zip, ab_binary_name, &ab_binary_entry) == 0;
++    if (is_ab_ota) {
++        LOGINFO("Skipping system and vendor unmount for local A/B OTA.\n");
++        unmount_system = 0;
++        unmount_vendor = 0;
++    }
++
+     if (unmount_system) {
+ 	if (PartitionManager.Is_Mounted_By_Path(PartitionManager.Get_Android_Root_Path())) {
+ 		gui_msg("unmount_system=Unmounting System...");
+@@ -427,9 +439,7 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+   time_t start, stop;
+   time(&start);
+ 
+-  std::string update_binary_name(UPDATE_BINARY_NAME);
+-  ZipEntry64 update_binary_entry;
+-  if (FindEntry(Zip, update_binary_name, &update_binary_entry) == 0) {
++  if (is_update_binary) {
+ 		LOGINFO("Update binary zip\n");
+ 		// Additionally verify the compatibility of the package.
+ 		if (!Fox_Skip_Treble_Compatibility_Check() && !verify_package_compatibility(Zip)) {
+@@ -456,9 +466,7 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+ 			}
+ 		}
+ 	} else {
+-		std::string ab_binary_name(AB_OTA);
+-		ZipEntry64 ab_binary_entry;
+-		if (FindEntry(Zip, ab_binary_name, &ab_binary_entry) == 0) {
++		if (is_ab_ota) {
+ 			LOGINFO("AB zip\n");
+ 			gui_msg(Msg(msg::kHighlight, "flash_ab_inactive=Flashing A/B zip to inactive slot: {1}")(PartitionManager.Get_Active_Slot_Display()=="A"?"B":"A"));
+ 			// We need this so backuptool can do its magic

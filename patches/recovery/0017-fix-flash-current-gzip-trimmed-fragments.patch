@@ -1,0 +1,31 @@
+--- a/twrpRepacker.cpp	2026-07-31 17:57:45.399709437 +0000
++++ b/twrpRepacker.cpp	2026-07-31 18:12:18.209486436 +0000
+@@ -807,10 +807,27 @@
+ 		const std::string trim_platform = trim_dir + "/vendor_ramdisk_.cpio";
+ 		const std::string trim_recovery = trim_dir + "/vendor_ramdisk_recovery.cpio";
+ 		const std::string trim_dtb = trim_dir + "/dtb";
++		// MagiskBoot repacks with the original fragment format (lz4_legacy on
++		// Dali), which leaves the trimmed platform too large for the 64 MiB
++		// partition. Re-compress both trimmed fragments with gzip in a separate
++		// repack directory (matching the release packaging path); the trim
++		// directory keeps uncompressed copies for post-repack verification.
++		const std::string repack_dir = trim_dir + "/gzip";
++		const std::string repack_platform = repack_dir + "/vendor_ramdisk_.cpio";
++		const std::string repack_recovery = repack_dir + "/vendor_ramdisk_recovery.cpio";
+ 		if (!TWFunc::Path_Exists(trim_platform) || !TWFunc::Path_Exists(trim_recovery) || !TWFunc::Path_Exists(trim_dtb) ||
+ 			!TrimPlatformFragment(magiskboot, trim_platform, source_recovery_raw) ||
+ 			TWFunc::copy_file(source_recovery_raw, trim_recovery, 0644, false) != 0 ||
+-			TWFunc::Exec_Cmd("cd " + ShellQuote(trim_dir) + " && " + ShellQuote(magiskboot) +
++			!TWFunc::Recursive_Mkdir(repack_dir) ||
++			TWFunc::copy_file(trim_platform, repack_platform, 0644, false) != 0 ||
++			TWFunc::copy_file(trim_recovery, repack_recovery, 0644, false) != 0 ||
++			TWFunc::copy_file(trim_dtb, repack_dir + "/dtb", 0644, false) != 0 ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(repack_dir) +
++				" && /system/bin/gzip -c vendor_ramdisk_.cpio > vendor_ramdisk_.cpio.gz" +
++				" && mv -f vendor_ramdisk_.cpio.gz vendor_ramdisk_.cpio" +
++				" && /system/bin/gzip -c vendor_ramdisk_recovery.cpio > vendor_ramdisk_recovery.cpio.gz" +
++				" && mv -f vendor_ramdisk_recovery.cpio.gz vendor_ramdisk_recovery.cpio", false) != 0 ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(repack_dir) + " && " + ShellQuote(magiskboot) +
+ 				" repack " + ShellQuote(inactive_image) + " " + ShellQuote(rebuilt_image), false) != 0) {
+ 			LOGERR("Unable to trim and rebuild the inactive platform fragment\n");
+ 			gui_print("Unable to trim the inactive platform fragment safely; no partition was written.\n");

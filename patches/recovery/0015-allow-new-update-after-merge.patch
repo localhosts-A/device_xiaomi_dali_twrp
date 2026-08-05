@@ -1,0 +1,16 @@
+diff --git a/system/core/fs_mgr/libsnapshot/snapshot.cpp b/system/core/fs_mgr/libsnapshot/snapshot.cpp
+index 8e7f6ec..ecbe6ac 100644
+--- a/system/core/fs_mgr/libsnapshot/snapshot.cpp
++++ b/system/core/fs_mgr/libsnapshot/snapshot.cpp
+@@ -208,7 +208,10 @@ bool SnapshotManager::BeginUpdate() {
+     old_partition_metadata_ = nullptr;
+ 
+     auto state = ReadUpdateState(file.get());
+-    if (state != UpdateState::None) {
++    // In Recovery a previous update can finish merging (MergeCompleted) just
++    // before a new OTA starts in the same session. Treat that finalized state
++    // like None so the next update is not blocked by stale merge metadata.
++    if (state != UpdateState::None && state != UpdateState::MergeCompleted) {
+         LOG(ERROR) << "An update is already in progress, cannot begin a new update";
+         return false;
+     }

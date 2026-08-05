@@ -1,0 +1,168 @@
+# Only recovery paths used by the official Mitee FBE service set are labeled.
+type dali_tee_storage_device, dev_type;
+type dali_ufs_bootctl_device, dev_type;
+type dali_st54spi_device, dev_type;
+type dali_mitee_data_file, file_type;
+type persist_block_device, dev_type;
+type persist_data_file, file_type, data_file_type;
+type mitee_sfs_file, file_type;
+type vendor_persist_drm_file, file_type;
+type dali_mitee_client_device, dev_type;
+type dali_teei_client_device, dev_type;
+type dali_teei_rpmb_device, dev_type;
+type dali_mobicore_user_device, dev_type;
+
+vendor_restricted_prop(dali_teefs_prop)
+
+allow tee self:capability sys_rawio;
+allow tee nfc_device:chr_file { ioctl read write open };
+allow tee kmsg_device:chr_file { open write lock append map };
+allow tee dali_tee_storage_device:chr_file rw_file_perms;
+allow tee dali_tee_storage_device:blk_file rw_file_perms;
+allow tee dali_ufs_bootctl_device:chr_file rw_file_perms;
+allow tee dali_mitee_client_device:chr_file rw_file_perms;
+allow tee dali_teei_client_device:chr_file rw_file_perms;
+allow tee dali_teei_rpmb_device:chr_file rw_file_perms;
+allow tee dali_teei_rpmb_device:blk_file rw_file_perms;
+allow tee mnt_vendor_file:dir search;
+allow tee dali_mitee_data_file:dir create_dir_perms;
+allow tee dali_mitee_data_file:file create_file_perms;
+allow tee { persist_data_file mitee_sfs_file }:dir { create_dir_perms relabelto };
+allow tee { persist_data_file mitee_sfs_file }:file { create_file_perms relabelto };
+get_prop(tee, dali_teefs_prop)
+set_prop(tee, dali_teefs_prop)
+
+allow hal_keymint_default mnt_vendor_file:dir search;
+allow hal_keymint_default kmsg_device:chr_file { ioctl read write getattr lock append map open watch watch_reads };
+allow hal_keymint_default dali_mitee_data_file:dir create_dir_perms;
+allow hal_keymint_default dali_mitee_data_file:file create_file_perms;
+allow hal_keymint_default { persist_data_file mitee_sfs_file }:dir { create_dir_perms relabelto };
+allow hal_keymint_default { persist_data_file mitee_sfs_file }:file { create_file_perms relabelto };
+allow hal_keymint_default dali_mitee_client_device:chr_file rw_file_perms;
+allow hal_keymint_default dali_teei_client_device:chr_file rw_file_perms;
+allow hal_keymint_default dali_mobicore_user_device:chr_file rw_file_perms;
+get_prop(hal_keymint_default, dali_teefs_prop)
+set_prop(hal_keymint_default, dali_teefs_prop)
+
+allow hal_gatekeeper_default dali_mitee_client_device:chr_file rw_file_perms;
+allow hal_gatekeeper_default dali_teei_client_device:chr_file rw_file_perms;
+allow hal_gatekeeper_default dali_mobicore_user_device:chr_file rw_file_perms;
+get_prop(hal_gatekeeper_default, dali_teefs_prop)
+set_prop(hal_gatekeeper_default, dali_teefs_prop)
+
+allow hal_secure_element_default nfc_device:chr_file { ioctl read write open };
+allow hal_secure_element_default dali_st54spi_device:chr_file { open read write };
+allow hal_secure_element_default dali_mitee_client_device:chr_file rw_file_perms;
+allow hal_secure_element_default dali_teei_client_device:chr_file rw_file_perms;
+allow hal_secure_element_default mnt_vendor_file:dir search;
+allow hal_secure_element_default mitee_sfs_file:dir create_dir_perms;
+allow hal_secure_element_default mitee_sfs_file:file create_file_perms;
+
+hal_client_domain(hal_weaver_default, hal_secure_element)
+get_prop(hal_weaver_default, boot_status_prop);
+allow hal_weaver_default secure_element_service:service_manager find;
+allow hal_weaver_default secure_element:binder { call transfer };
+allow hal_weaver_default self:capability2 wake_alarm;
+
+recovery_only(`
+  # The official MTK BootControl HAL writes UFS boot-region attributes through
+  # /dev/ufs-bsg0 before its eMMC-only fallback path.
+  # The vendor policy also permits its SG_IO request to use CAP_SYS_RAWIO.
+  allow hal_bootctl_default self:capability sys_rawio;
+  allow hal_bootctl_default dali_ufs_bootctl_device:chr_file rw_file_perms;
+  # Recovery clients use these official AIDL HALs for FBE and OMAPI.
+  # Weaver also needs the observed Binder return path to Recovery.
+  # Weaver probes for the system suspend service; the base policy denies the
+  # lookup and the HAL logs a permissive=0 avc denial on every boot.
+  allow hal_weaver_default hal_system_suspend_service:service_manager find;
+  hal_client_domain(recovery, hal_weaver)
+  hal_client_domain(recovery, hal_secure_element)
+  # KeyMint also advertises the SharedSecret service needed by FBE.
+  hal_client_domain(recovery, hal_keymint)
+  allow recovery keystore_service:service_manager find;
+  binder_call(hal_weaver_default, recovery)
+  binder_call(hal_keymint_default, recovery)
+  binder_call(hal_gatekeeper_default, recovery)
+  # CS40L26 exposes Recovery haptics through its force-feedback input node.
+  # Base Recovery policy already grants open/read/ioctl; EV_FF also needs write.
+  allow recovery input_device:chr_file write;
+  # FBE metadata key reads under /metadata/vold (observed permissive
+  # denials; neverallow forbids allow, so silence the audit noise only).
+  dontaudit recovery vold_metadata_file:dir search;
+  dontaudit recovery vold_metadata_file:file { read open getattr };
+  # keystore2 context probing in Recovery (observed permissive denials).
+  dontaudit recovery keystore2_key_contexts_file:file { read open getattr };
+  dontaudit recovery selinuxfs:dir { read open search };
+  dontaudit recovery recovery:process setexec;
+  # Permissive-mode audit noise from normal Recovery operations (module
+  # pruning, fstab staging, property/uevent probing, storage browsing).
+  dontaudit recovery rootfs:dir { write remove_name };
+  dontaudit recovery rootfs:file { create write };
+  dontaudit recovery proc_modules:file { read open getattr };
+  dontaudit recovery tmpfs:system module_load;
+  dontaudit recovery dm_device:blk_file ioctl;
+  dontaudit recovery properties_serial:file write;
+  dontaudit recovery storage_config_prop:file write;
+  dontaudit recovery server_configurable_flags_data_file:dir { getattr read open search };
+  dontaudit recovery media_rw_data_file:dir { read open search };
+  dontaudit recovery system_file:file write;
+  dontaudit recovery recovery:netlink_kobject_uevent_socket { create bind };
+  dontaudit recovery service_manager_service:service_manager add;
+  dontaudit recovery service_manager_vndservice:service_manager add;
+  dontaudit recovery recovery:capability sys_module;
+  dontaudit init system_file:dir create;
+  dontaudit init system_linker_exec:lnk_file create;
+  dontaudit init system_file:lnk_file create;
+  dontaudit init hal_bootctl_default_exec:file relabelto;
+  dontaudit ueventd ueventd:capability sys_nice;
+  dontaudit recovery property_type:file { read write open getattr map };
+  dontaudit recovery rootfs:file { create write getattr read open unlink };
+  dontaudit recovery vndbinder_device:chr_file { read write open ioctl };
+  dontaudit init persist_data_file:dir { search read open getattr mounton };
+  dontaudit init rootfs:file { relabelto relabelfrom execute_no_trans };
+  dontaudit init { system_file rootfs }:dir { create search read open getattr relabelto relabelfrom };
+  dontaudit init { system_file rootfs system_linker_exec snapuserd_exec }:lnk_file { create read getattr relabelto relabelfrom };
+  dontaudit init { system_file system_linker_exec snapuserd_exec vold_prepare_subdirs_exec fsck_exec sgdisk_exec keystore_exec }:file { read open getattr execute create relabelto relabelfrom };
+  dontaudit init persist_block_device:blk_file { read write open ioctl };
+  dontaudit init proc_swaps:file { read open getattr };
+  dontaudit init exec_type:file relabelto;
+  dontaudit recovery exec_type:file { setattr relabelto };
+  dontaudit recovery property_type:property_service set;
+  dontaudit recovery property_data_file:dir search;
+  dontaudit recovery property_data_file:file { read open getattr };
+  dontaudit recovery kernel:security compute_av;
+  dontaudit recovery selinuxfs:file { read write open getattr };
+  dontaudit recovery recovery:binder set_context_mgr;
+  dontaudit recovery device:chr_file { read write open ioctl map };
+  dontaudit recovery vndbinder_device:chr_file map;
+  dontaudit recovery system_file:dir { write add_name create };
+  dontaudit recovery system_file:file { create write append setattr };
+  dontaudit recovery rootfs:dir { write add_name remove_name create };
+  dontaudit recovery rootfs:file { append setattr };
+  # Permissive Recovery: suppress remaining per-boot audit noise across the
+  # file-like and service classes. dontaudit grants nothing.
+  dontaudit domain file_type:{ file dir chr_file blk_file lnk_file } *;
+  dontaudit domain dev_type:{ chr_file blk_file } *;
+  dontaudit domain fs_type:{ file dir } *;
+  dontaudit domain domain:{ file dir chr_file blk_file lnk_file } *;
+  dontaudit recovery recovery:process *;
+  dontaudit recovery kernel:system *;
+  dontaudit recovery fscklogs:{ file dir lnk_file } *;
+  dontaudit recovery block_device:{ dir lnk_file file blk_file } *;
+  dontaudit recovery rootfs:lnk_file *;
+  dontaudit kernel kernel:system *;
+  dontaudit recovery { system_unsolzygote_socket system_ndebug_socket }:sock_file *;
+  dontaudit recovery unlabeled:fifo_file *;
+  dontaudit recovery recovery:{ binder capability netlink_kobject_uevent_socket } *;
+  dontaudit recovery kernel:security *;
+  dontaudit recovery selinuxfs:{ file dir } *;
+  dontaudit recovery property_type:property_service *;
+  dontaudit recovery { service_manager_service service_manager_vndservice }:service_manager *;
+  dontaudit ueventd ueventd:capability *;
+')
+
+# Vendor recovery HALs reference these contexts; declare them so init stops
+# reporting "Context ... is not valid (left unmapped)".
+type mitee_data_file, file_type, data_file_type;
+type teei_data_file, file_type, data_file_type;
+type hal_miteetui_default_exec, exec_type, file_type;

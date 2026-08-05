@@ -1,0 +1,44 @@
+diff --git a/lk_protection_exec.c b/lk_protection_exec.c
+index 27f9b40..92d9d92 100644
+--- a/lk_protection_exec.c
++++ b/lk_protection_exec.c
+@@ -37,8 +37,6 @@ extern char** environ;
+ #define LK_B_NAME "lk_b"
+ #define LK_A_RAW_DEVICE "/dev/block/sdc36"
+ #define LK_B_RAW_DEVICE "/dev/block/sdc70"
+-/* The official Dali OTA LK target is 995 blocks (4,075,520 bytes). */
+-#define LK_VIRTUAL_SIZE UINT64_C(4075520)
+ #define PRELOADER_A_NAME "preloader_raw_a"
+ #define PRELOADER_B_NAME "preloader_raw_b"
+ /* The official Dali OTA preloader_raw target is 253 blocks (1,036,288 bytes). */
+@@ -146,7 +144,11 @@ static bool CopyBlockDevice(const char* source,
+         ReportErrno("could not create an LK temporary backing file");
+         goto done;
+     }
+-    if (requested_size == 0 || requested_size > block_size) {
++    /* Zero is the internal sentinel for retaining the source device capacity. */
++    if (requested_size == 0) {
++        requested_size = block_size;
++    }
++    if (requested_size > block_size) {
+         errno = EINVAL;
+         ReportErrno("the LK virtual size exceeds the source block device");
+         goto done;
+@@ -524,14 +526,15 @@ static bool SetupContext(struct lk_context* context) {
+         ReportMessage("could not validate Dali LK block-device paths");
+         goto fail;
+     }
++    /* Preserve native capacity, so protected OTA writes cannot overrun a fixed LK image. */
+     if (!BuildPath(context->lk_a.backing_path, sizeof(context->lk_a.backing_path), context->temporary_root, "lk_a.img") ||
+         !BuildPath(context->lk_b.backing_path, sizeof(context->lk_b.backing_path), context->temporary_root, "lk_b.img") ||
+         !BuildPath(context->preloader_a.backing_path, sizeof(context->preloader_a.backing_path),
+                    context->temporary_root, "preloader_a.img") ||
+         !BuildPath(context->preloader_b.backing_path, sizeof(context->preloader_b.backing_path),
+                    context->temporary_root, "preloader_b.img") ||
+-        !CopyBlockDevice(context->raw_lk_a, context->lk_a.backing_path, LK_VIRTUAL_SIZE, &lk_a_size) ||
+-        !CopyBlockDevice(context->raw_lk_b, context->lk_b.backing_path, LK_VIRTUAL_SIZE, &lk_b_size) ||
++        !CopyBlockDevice(context->raw_lk_a, context->lk_a.backing_path, 0, &lk_a_size) ||
++        !CopyBlockDevice(context->raw_lk_b, context->lk_b.backing_path, 0, &lk_b_size) ||
+         lk_a_size != lk_b_size) {
+         ReportMessage("could not create matched LK temporary backing images");
+         goto fail;

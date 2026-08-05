@@ -1,0 +1,7 @@
+--- a/variables.h
++++ b/variables.h
+@@ -111,3 +111,3 @@
+ #define FOX_STARTUP_SCRIPT 		"/sbin/foxstart.sh"
+-#define FOX_PS_BIN 			"/FFiles/ps"
++#define FOX_PS_BIN 			"/system/bin/ps"
+ #define FOX_NEW_MAGISKBOOT 		"/FFiles/magiskboot_new"

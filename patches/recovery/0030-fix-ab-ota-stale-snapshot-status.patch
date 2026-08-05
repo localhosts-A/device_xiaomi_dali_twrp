@@ -1,0 +1,27 @@
+diff --git a/twrpinstall/twinstall.cpp b/twrpinstall/twinstall.cpp
+--- a/twrpinstall/twinstall.cpp
++++ b/twrpinstall/twinstall.cpp
+@@ -563,7 +563,23 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+ 			} else {
+ 				LOGERR("Unable to mount /metadata for A/B OTA snapshot handling.\n");
+ 			}
++			// An interrupted previous OTA can leave snapshot status files for the
++			// current slot in /metadata/ota/snapshots even though its dm devices
++			// are already gone (cleared above). libsnapshot's FinishUpdate() then
++			// fails in EnsureNoOverflowSnapshot() with "Could not read snapshot
++			// device table" and the whole OTA aborts with
++			// kPostinstallRunnerError. Remove the stale statuses so the new OTA
++			// finalizes cleanly; update_engine recreates target-slot statuses.
++			LOGINFO("Clearing stale A/B snapshot status files for current slot.\n");
++			char ab_status_path[160];
++			for (const char* partition : kAbSnapshotPartitions) {
++				snprintf(ab_status_path, sizeof(ab_status_path),
++				         "/metadata/ota/snapshots/%s_a", partition);
++				if (unlink(ab_status_path) == 0) {
++					LOGINFO("Removed stale snapshot status %s.\n", ab_status_path);
++				}
++			}
+ 			ret_val = Run_Update_Binary(path, wipe_cache, AB_OTA_ZIP_TYPE);
+ 
+ 			DataManager::SetValue(FOX_ZIP_INSTALLER_CODE, 1); // mark as custom ROM install
+ 

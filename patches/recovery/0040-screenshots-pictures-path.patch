@@ -1,0 +1,12 @@
+--- a/bootable/recovery/gui/action.cpp
++++ b/bootable/recovery/gui/action.cpp
+@@ -1374,8 +1374,7 @@ int GUIAction::screenshotImpl(std::string arg __unused)
+ 	uid_t uid = AID_MEDIA_RW;
+ 	gid_t gid = AID_MEDIA_RW;
+ 
+-	strcpy(path, Fox_Home.c_str());
+-	strcat(path, "/screenshots/");
++	strcpy(path, "/sdcard/Pictures/screenshots/");
+ 
+ 	if (!TWFunc::Create_Dir_Recursive(path, 0775, uid, gid)) {
+ 		strcpy(path, "/tmp/");

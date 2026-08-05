@@ -1,0 +1,27 @@
+--- a/twrp.cpp
++++ b/twrp.cpp
+@@ -632,7 +632,20 @@
+ 	}
+ #ifndef FOX_ALLOW_EARLY_SETTINGS_LOAD
+ 	// Language
+-	PageManager::LoadLanguage(DataManager::GetStrValue("tw_language"));
++	std::string gui_language = DataManager::GetStrValue("tw_language");
++	// Dali: default to zh_CN whenever no explicit settings store exists yet.
++	if (gui_language.empty() || (gui_language == "en" && !TWFunc::Path_Exists(Fox_Settings_Path + "/.foxs")))
++		gui_language = "zh_CN";
++	// Dali: force UTC+8 (TAIST-8, DST off) when the store has no zone yet or
++	// still carries the stock OrangeFox CET default. The settings page keeps
++	// the four timezone values in sync, so set the GUI selection pair too.
++	{
++		std::string tz = DataManager::GetStrValue(TW_TIME_ZONE_VAR);
++		if (tz.empty() || tz == "CET-1;CEST,M3.5.0,M10.5.0") {
++			DataManager::SetValue(TW_TIME_ZONE_VAR, "TAIST-8");
++			DataManager::SetValue(TW_TIME_ZONE_GUISEL, "TAIST-8;TAIDT");
++			DataManager::SetValue(TW_TIME_ZONE_GUIOFFSET, "0");
++			DataManager::SetValue(TW_TIME_ZONE_GUIDST, "0");
++		}
++	}
++	PageManager::LoadLanguage(gui_language);
+ 	GUIConsole::Translate_Now();
+ #endif
+ 	// Fox extra setup

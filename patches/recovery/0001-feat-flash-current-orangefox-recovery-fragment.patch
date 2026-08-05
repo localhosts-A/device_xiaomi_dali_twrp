@@ -1,0 +1,486 @@
+diff --git a/twrpRepacker.cpp b/twrpRepacker.cpp
+index ca3f8243fe2a2a162f1db7f40e48ba8387a42272..f02ab1689cd12a772cb606b1d57fca82e437f632 100755
+--- a/twrpRepacker.cpp
++++ b/twrpRepacker.cpp
+@@ -19,7 +19,22 @@
+ 	along with TWRP.  If not, see <http://www.gnu.org/licenses/>.
+ */
+ 
++#include <algorithm>
++#include <array>
++#include <cerrno>
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++#include <dirent.h>
++#include <fcntl.h>
++#include <limits>
+ #include <string>
++#include <sys/stat.h>
++#include <unistd.h>
++#include <vector>
++
++#include <libavb/libavb.h>
++#include <openssl/sha.h>
+ 
+ #include "data.hpp"
+ #include "partitions.hpp"
+@@ -125,6 +140,404 @@ static bool is_AB_for_repacker() {
+ 	return !slot.empty();
+ }
+ 
++#if defined(BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT) || defined(FOX_VENDOR_BOOT_RECOVERY)
++namespace {
++
++constexpr char kVendorBootPartitionName[] = "vendor_boot";
++constexpr size_t kHashChunkSize = 64 * 1024;
++
++struct VendorBootAvbInfo {
++	AvbFooter footer{};
++	std::vector<uint8_t> vbmeta;
++	size_t descriptor_offset = 0;
++	size_t salt_offset = 0;
++	size_t salt_size = 0;
++	size_t digest_offset = 0;
++	size_t digest_size = 0;
++	uint64_t descriptor_image_size = 0;
++};
++
++class ScopedRepackWorkdir {
++public:
++	explicit ScopedRepackWorkdir(const std::string& path) : path_(path) {}
++	~ScopedRepackWorkdir() {
++		if (TWFunc::Path_Exists(path_))
++			TWFunc::removeDir(path_, false);
++	}
++
++private:
++	std::string path_;
++};
++
++static bool ReadFullyAt(int fd, void* buffer, size_t size, uint64_t offset) {
++	if (offset > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) ||
++		size > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) - offset)
++		return false;
++
++	uint8_t* cursor = static_cast<uint8_t*>(buffer);
++	size_t done = 0;
++	while (done < size) {
++		ssize_t read_size = pread(fd, cursor + done, size - done, static_cast<off_t>(offset + done));
++		if (read_size < 0) {
++			if (errno == EINTR)
++				continue;
++			return false;
++		}
++		if (read_size == 0)
++			return false;
++		done += static_cast<size_t>(read_size);
++	}
++	return true;
++}
++
++static bool WriteFullyAt(int fd, const void* buffer, size_t size, uint64_t offset) {
++	if (offset > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) ||
++		size > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) - offset)
++		return false;
++
++	const uint8_t* cursor = static_cast<const uint8_t*>(buffer);
++	size_t done = 0;
++	while (done < size) {
++		ssize_t write_size = pwrite(fd, cursor + done, size - done, static_cast<off_t>(offset + done));
++		if (write_size < 0) {
++			if (errno == EINTR)
++				continue;
++			return false;
++		}
++		if (write_size == 0)
++			return false;
++		done += static_cast<size_t>(write_size);
++	}
++	return true;
++}
++
++static bool ReadVendorBootAvb(const std::string& image, uint64_t expected_size, VendorBootAvbInfo* info) {
++	struct stat st {};
++	if (stat(image.c_str(), &st) != 0 || st.st_size < static_cast<off_t>(AVB_FOOTER_SIZE) ||
++		static_cast<uint64_t>(st.st_size) != expected_size)
++		return false;
++
++	int fd = open(image.c_str(), O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++
++	AvbFooter raw_footer{};
++	bool result = ReadFullyAt(fd, &raw_footer, sizeof(raw_footer), expected_size - AVB_FOOTER_SIZE);
++	close(fd);
++	if (!result || !avb_footer_validate_and_byteswap(&raw_footer, &info->footer))
++		return false;
++
++	if (info->footer.original_image_size == 0 ||
++		info->footer.original_image_size > info->footer.vbmeta_offset ||
++		info->footer.vbmeta_offset > expected_size - AVB_FOOTER_SIZE ||
++		info->footer.vbmeta_size > expected_size - AVB_FOOTER_SIZE - info->footer.vbmeta_offset ||
++		info->footer.vbmeta_size > std::numeric_limits<size_t>::max())
++		return false;
++
++	if (info->footer.vbmeta_size < AVB_VBMETA_IMAGE_HEADER_SIZE)
++		return false;
++
++	info->vbmeta.resize(static_cast<size_t>(info->footer.vbmeta_size));
++	fd = open(image.c_str(), O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++	result = ReadFullyAt(fd, info->vbmeta.data(), info->vbmeta.size(), info->footer.vbmeta_offset);
++	close(fd);
++	if (!result)
++		return false;
++	const AvbVBMetaVerifyResult verify_result =
++		avb_vbmeta_image_verify(info->vbmeta.data(), info->vbmeta.size(), nullptr, nullptr);
++	if (verify_result != AVB_VBMETA_VERIFY_RESULT_OK_NOT_SIGNED) {
++		LOGERR("Vendor_boot AVB must use Algorithm NONE for fragment reflash (got %s)\n",
++			avb_vbmeta_verify_result_to_string(verify_result));
++		return false;
++	}
++
++	AvbVBMetaImageHeader header{};
++	avb_vbmeta_image_header_to_host_byte_order(
++		reinterpret_cast<const AvbVBMetaImageHeader*>(info->vbmeta.data()), &header);
++	if (header.algorithm_type != AVB_ALGORITHM_TYPE_NONE ||
++		header.authentication_data_block_size > info->vbmeta.size() - AVB_VBMETA_IMAGE_HEADER_SIZE ||
++		header.auxiliary_data_block_size > info->vbmeta.size() - AVB_VBMETA_IMAGE_HEADER_SIZE - header.authentication_data_block_size ||
++		header.descriptors_offset > header.auxiliary_data_block_size ||
++		header.descriptors_size > header.auxiliary_data_block_size - header.descriptors_offset)
++		return false;
++
++	const size_t auxiliary_start = AVB_VBMETA_IMAGE_HEADER_SIZE +
++		static_cast<size_t>(header.authentication_data_block_size);
++	if (header.descriptors_offset > info->vbmeta.size() - auxiliary_start)
++		return false;
++	const size_t descriptors_start = auxiliary_start + static_cast<size_t>(header.descriptors_offset);
++	if (header.descriptors_size > info->vbmeta.size() - descriptors_start)
++		return false;
++
++	size_t cursor = descriptors_start;
++	const size_t end = cursor + static_cast<size_t>(header.descriptors_size);
++	int matches = 0;
++	while (cursor < end) {
++		if (end - cursor < sizeof(AvbDescriptor))
++			return false;
++
++		const auto* raw_descriptor = reinterpret_cast<const AvbDescriptor*>(info->vbmeta.data() + cursor);
++		AvbDescriptor descriptor{};
++		if (!avb_descriptor_validate_and_byteswap(raw_descriptor, &descriptor) ||
++			descriptor.num_bytes_following > end - cursor - sizeof(AvbDescriptor))
++			return false;
++
++		const size_t descriptor_size = sizeof(AvbDescriptor) + static_cast<size_t>(descriptor.num_bytes_following);
++		if (descriptor.tag == AVB_DESCRIPTOR_TAG_HASH) {
++			if (descriptor_size < sizeof(AvbHashDescriptor))
++				return false;
++
++			const auto* raw_hash = reinterpret_cast<const AvbHashDescriptor*>(raw_descriptor);
++			AvbHashDescriptor hash{};
++			if (!avb_hash_descriptor_validate_and_byteswap(raw_hash, &hash))
++				return false;
++
++			const uint64_t variable_size = static_cast<uint64_t>(hash.partition_name_len) + hash.salt_len + hash.digest_len;
++			if (variable_size > descriptor_size - sizeof(AvbHashDescriptor))
++				return false;
++
++			const uint8_t* partition_name = info->vbmeta.data() + cursor + sizeof(AvbHashDescriptor);
++			if (hash.partition_name_len == sizeof(kVendorBootPartitionName) - 1 &&
++				std::memcmp(partition_name, kVendorBootPartitionName, sizeof(kVendorBootPartitionName) - 1) == 0) {
++				const bool canonical_sha256 = std::memcmp(hash.hash_algorithm, "sha256", 6) == 0 &&
++					std::all_of(hash.hash_algorithm + 6, hash.hash_algorithm + sizeof(hash.hash_algorithm),
++						[](uint8_t value) { return value == 0; });
++				if (!canonical_sha256 || hash.digest_len != SHA256_DIGEST_LENGTH || ++matches != 1)
++					return false;
++				info->descriptor_offset = cursor;
++				info->salt_offset = cursor + sizeof(AvbHashDescriptor) + hash.partition_name_len;
++				info->salt_size = hash.salt_len;
++				info->digest_offset = info->salt_offset + hash.salt_len;
++				info->digest_size = hash.digest_len;
++				info->descriptor_image_size = hash.image_size;
++			}
++		}
++
++		cursor += descriptor_size;
++	}
++	return cursor == end && matches == 1;
++}
++
++static bool CalculateVendorBootDigest(const std::string& image, const VendorBootAvbInfo& info,
++		std::array<uint8_t, SHA256_DIGEST_LENGTH>* digest) {
++	int fd = open(image.c_str(), O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++
++	SHA256_CTX context{};
++	bool result = SHA256_Init(&context) == 1 &&
++		SHA256_Update(&context, info.vbmeta.data() + info.salt_offset, info.salt_size) == 1;
++	std::array<uint8_t, kHashChunkSize> buffer{};
++	uint64_t offset = 0;
++	while (result && offset < info.footer.original_image_size) {
++		size_t to_read = static_cast<size_t>(std::min<uint64_t>(buffer.size(), info.footer.original_image_size - offset));
++		result = ReadFullyAt(fd, buffer.data(), to_read, offset) && SHA256_Update(&context, buffer.data(), to_read) == 1;
++		offset += to_read;
++	}
++	if (result)
++		result = SHA256_Final(digest->data(), &context) == 1;
++	close(fd);
++	return result;
++}
++
++static bool VerifyVendorBootAvb(const std::string& image, uint64_t expected_size) {
++	VendorBootAvbInfo info;
++	std::array<uint8_t, SHA256_DIGEST_LENGTH> digest{};
++	return ReadVendorBootAvb(image, expected_size, &info) &&
++		info.descriptor_image_size == info.footer.original_image_size &&
++		CalculateVendorBootDigest(image, info, &digest) &&
++		std::memcmp(digest.data(), info.vbmeta.data() + info.digest_offset, digest.size()) == 0;
++}
++
++static bool RepairVendorBootAvb(const std::string& image, uint64_t expected_size) {
++	VendorBootAvbInfo info;
++	std::array<uint8_t, SHA256_DIGEST_LENGTH> digest{};
++	if (!ReadVendorBootAvb(image, expected_size, &info) || !CalculateVendorBootDigest(image, info, &digest))
++		return false;
++
++	const uint64_t serialized_size = avb_htobe64(info.footer.original_image_size);
++	std::memcpy(info.vbmeta.data() + info.descriptor_offset + offsetof(AvbHashDescriptor, image_size),
++		&serialized_size, sizeof(serialized_size));
++	std::memcpy(info.vbmeta.data() + info.digest_offset, digest.data(), digest.size());
++
++	int fd = open(image.c_str(), O_WRONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++	bool result = WriteFullyAt(fd, info.vbmeta.data(), info.vbmeta.size(), info.footer.vbmeta_offset) && fsync(fd) == 0;
++	close(fd);
++	return result && VerifyVendorBootAvb(image, expected_size);
++}
++
++static std::string ShellQuote(const std::string& value) {
++	std::string quoted("'");
++	for (char character : value) {
++		if (character == '\'')
++			quoted += "'\\''";
++		else
++			quoted += character;
++	}
++	return quoted + "'";
++}
++
++static bool CompareFiles(const std::string& first, const std::string& second) {
++	return TWFunc::Exec_Cmd("/system/bin/cmp -s " + ShellQuote(first) + " " + ShellQuote(second), false) == 0;
++}
++
++static bool CompareOptionalFile(const std::string& first, const std::string& second) {
++	const bool first_exists = TWFunc::Path_Exists(first);
++	return first_exists == TWFunc::Path_Exists(second) && (!first_exists || CompareFiles(first, second));
++}
++
++static bool ListVendorRamdisks(const std::string& directory, std::vector<std::string>* files) {
++	DIR* handle = opendir(directory.c_str());
++	if (!handle)
++		return false;
++
++	files->clear();
++	while (dirent* entry = readdir(handle)) {
++		const std::string name(entry->d_name);
++		if (name.size() >= 20 && name.compare(0, 15, "vendor_ramdisk_") == 0 &&
++			name.compare(name.size() - 5, 5, ".cpio") == 0)
++			files->push_back(name);
++	}
++	closedir(handle);
++	std::sort(files->begin(), files->end());
++	return !files->empty();
++}
++
++static bool CompareRetainedVendorRamdisks(const std::string& original, const std::string& rebuilt) {
++	std::vector<std::string> original_files;
++	std::vector<std::string> rebuilt_files;
++	if (!ListVendorRamdisks(original, &original_files) || !ListVendorRamdisks(rebuilt, &rebuilt_files) ||
++		original_files != rebuilt_files)
++		return false;
++
++	for (const std::string& name : original_files) {
++		if (name != "vendor_ramdisk_recovery.cpio" && !CompareFiles(original + "/" + name, rebuilt + "/" + name))
++			return false;
++	}
++	return true;
++}
++
++static bool FlashCurrentVendorBootRecoveryFragment(TWPartition* target_partition, const std::string& slot) {
++	if (!target_partition || !TWFunc::Path_Exists(TWFunc::Get_MagiskBoot())) {
++		LOGERR("Vendor_boot fragment reflash prerequisites are unavailable\n");
++		return false;
++	}
++
++	std::string active_suffix;
++	std::string inactive_suffix;
++	if (slot == "_a" || slot == "a") {
++		active_suffix = "_a";
++		inactive_suffix = "_b";
++	} else if (slot == "_b" || slot == "b") {
++		active_suffix = "_b";
++		inactive_suffix = "_a";
++	} else {
++		LOGERR("Unsupported active slot '%s' for /vendor_boot\n", slot.c_str());
++		return false;
++	}
++
++	const std::string& source = target_partition->Actual_Block_Device;
++	if (source.size() <= active_suffix.size() ||
++		source.compare(source.size() - active_suffix.size(), active_suffix.size(), active_suffix) != 0) {
++		LOGERR("Active vendor_boot block device '%s' does not match slot '%s'\n", source.c_str(), slot.c_str());
++		return false;
++	}
++
++	const std::string destination = source.substr(0, source.size() - active_suffix.size()) + inactive_suffix;
++	if (!TWFunc::Path_Exists(source) || !TWFunc::Path_Exists(destination)) {
++		LOGERR("Unable to access vendor_boot slot devices '%s' and '%s'\n", source.c_str(), destination.c_str());
++		return false;
++	}
++
++	const uint64_t destination_size = TWFunc::IOCTL_Get_Block_Size(destination.c_str());
++	if (destination_size == 0) {
++		LOGERR("Unable to determine inactive vendor_boot size\n");
++		return false;
++	}
++
++	const std::string workdir = "/tmp/fox-vendor-boot-reflash";
++	if (TWFunc::Path_Exists(workdir) && TWFunc::removeDir(workdir, false) != 0) {
++		LOGERR("Unable to clear the vendor_boot reflash work directory\n");
++		return false;
++	}
++	if (!TWFunc::Recursive_Mkdir(workdir))
++		return false;
++	ScopedRepackWorkdir cleanup(workdir);
++
++	const std::string source_dir = workdir + "/source";
++	const std::string inactive_dir = workdir + "/inactive";
++	const std::string verify_dir = workdir + "/verify";
++	if (!TWFunc::Recursive_Mkdir(source_dir) || !TWFunc::Recursive_Mkdir(inactive_dir) || !TWFunc::Recursive_Mkdir(verify_dir))
++		return false;
++
++	gui_print("Preparing the inactive vendor_boot recovery fragment...\n");
++	const std::string magiskboot = TWFunc::Get_MagiskBoot();
++	if (TWFunc::Exec_Cmd("cd " + ShellQuote(source_dir) + " && " + ShellQuote(magiskboot) +
++			" unpack --vendor -n -h " + ShellQuote(source), false) != 0)
++		return false;
++
++	const std::string source_recovery = source_dir + "/vendor_ramdisk_recovery.cpio";
++	if (!TWFunc::Path_Exists(source_recovery)) {
++		LOGERR("Active vendor_boot has no recovery ramdisk fragment\n");
++		return false;
++	}
++
++	const std::string inactive_image = inactive_dir + "/vendor_boot.img";
++	if (TWFunc::Exec_Cmd("dd bs=1048576 if=" + ShellQuote(destination) + " of=" + ShellQuote(inactive_image) + " conv=fsync", false) != 0 ||
++		TWFunc::Exec_Cmd("cd " + ShellQuote(inactive_dir) + " && " + ShellQuote(magiskboot) +
++			" unpack --vendor -n -h vendor_boot.img", false) != 0)
++		return false;
++
++	const std::string inactive_platform = inactive_dir + "/vendor_ramdisk_.cpio";
++	const std::string inactive_recovery = inactive_dir + "/vendor_ramdisk_recovery.cpio";
++	const std::string inactive_dtb = inactive_dir + "/dtb";
++	if (!TWFunc::Path_Exists(inactive_platform) || !TWFunc::Path_Exists(inactive_recovery) || !TWFunc::Path_Exists(inactive_dtb) ||
++		TWFunc::copy_file(source_recovery, inactive_recovery, 0644, false) != 0)
++		return false;
++
++	DataManager::SetProgress(.35);
++	const std::string rebuilt_image = inactive_dir + "/new-vendor_boot.img";
++	if (TWFunc::Exec_Cmd("cd " + ShellQuote(inactive_dir) + " && " + ShellQuote(magiskboot) +
++			" repack -n vendor_boot.img " + ShellQuote(rebuilt_image), false) != 0)
++		return false;
++
++	if (!TWFunc::Path_Exists(rebuilt_image) || !RepairVendorBootAvb(rebuilt_image, destination_size)) {
++		LOGERR("Unable to repair and verify the inactive vendor_boot AVB footer\n");
++		gui_print("Unable to verify the inactive vendor_boot AVB footer; no partition was written.\n");
++		return false;
++	}
++
++	if (TWFunc::Exec_Cmd("cd " + ShellQuote(verify_dir) + " && " + ShellQuote(magiskboot) +
++			" unpack --vendor -n -h " + ShellQuote(rebuilt_image), false) != 0 ||
++		!CompareRetainedVendorRamdisks(inactive_dir, verify_dir) ||
++		!CompareFiles(inactive_dtb, verify_dir + "/dtb") ||
++		!CompareFiles(source_recovery, verify_dir + "/vendor_ramdisk_recovery.cpio") ||
++		!CompareOptionalFile(inactive_dir + "/vendor_bootconfig", verify_dir + "/vendor_bootconfig")) {
++		LOGERR("Rebuilt vendor_boot did not preserve the inactive platform fragments\n");
++		return false;
++	}
++
++	DataManager::SetProgress(.75);
++	PartitionManager.Unlock_Block_Partitions();
++	const std::string flash_command = "dd bs=1048576 if=" + ShellQuote(rebuilt_image) + " of=" + ShellQuote(destination) + " conv=fsync";
++	LOGINFO("Command=%s\n", flash_command.c_str());
++	if (TWFunc::Exec_Cmd(flash_command, false) != 0 || !CompareFiles(rebuilt_image, destination)) {
++		LOGERR("Failed to verify the inactive vendor_boot recovery fragment flash\n");
++		return false;
++	}
++
++	DataManager::SetProgress(1);
++	gui_print("Finished flashing the vendor_boot recovery fragment\n\n");
++	return true;
++}
++
++} // namespace
++#endif
++
+ bool twrpRepacker::Repack_Image_And_Flash(const std::string& Target_Image, const struct Repack_Options_struct& Repack_Options) {
+ 	if (!TWFunc::Path_Exists(TWFunc::Get_MagiskBoot())) {
+ 		LOGERR("Image repacking tool not present in this TWRP build!");
+@@ -333,22 +746,44 @@ bool twrpRepacker::Flash_Current_Twrp() {
+ 		dest_partition = "/vendor_boot";
+ 	#endif
+ 
+-	if (!slot.empty() && PartitionManager.Find_Partition_By_Path(dest_partition)) {
+-		std::string root, src, dest;
+-		root = "/dev/block/bootdevice/by-name" + dest_partition;
++	TWPartition* target_partition = PartitionManager.Find_Partition_By_Path(dest_partition);
++#if defined(FOX_VENDOR_BOOT_RECOVERY) || defined(BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT)
++	if (slot.empty() || !target_partition) {
++		LOGERR("Unable to locate the active %s slot\n", dest_partition.c_str());
++		return false;
++	}
++	return FlashCurrentVendorBootRecoveryFragment(target_partition, slot);
++#endif
++	if (!slot.empty() && target_partition) {
++		std::string active_suffix, inactive_suffix;
+ 		if (slot == "_a" || slot == "a") {
+-			src = root + "_a";
+-			dest= root + "_b";
++			active_suffix = "_a";
++			inactive_suffix = "_b";
++		} else if (slot == "_b" || slot == "b") {
++			active_suffix = "_b";
++			inactive_suffix = "_a";
++		} else {
++			LOGERR("Unsupported active slot '%s' for %s\n", slot.c_str(), dest_partition.c_str());
++			return false;
+ 		}
+-		else {
+-			src = root + "_b";
+-			dest= root + "_a";
++
++		const std::string& src = target_partition->Actual_Block_Device;
++		if (src.size() <= active_suffix.size() ||
++			src.compare(src.size() - active_suffix.size(), active_suffix.size(), active_suffix) != 0) {
++			LOGERR("Active block device '%s' does not match slot '%s'\n", src.c_str(), slot.c_str());
++			return false;
++		}
++
++		std::string dest = src.substr(0, src.size() - active_suffix.size()) + inactive_suffix;
++		if (!TWFunc::Path_Exists(src) || !TWFunc::Path_Exists(dest)) {
++			LOGERR("Unable to access %s slot devices '%s' and '%s'\n", dest_partition.c_str(), src.c_str(), dest.c_str());
++			return false;
+ 		}
+ 		PartitionManager.Unlock_Block_Partitions();
+ 
+ 		// only copy the relevant active slot to the inactive slot, on the basis that the recovery currently running
+ 		// in the active slot can simply be copied over to the inactive slot, so that both have the same recovery image
+-		std::string command = "dd bs=1048576 if=" + src + " of=" + dest;
++		std::string command = "dd bs=1048576 if=" + src + " of=" + dest + " conv=fsync";
+ 		LOGINFO("Command=%s\n", command.c_str());
+ 
+ 		if (TWFunc::Exec_Cmd(command) != 0) {

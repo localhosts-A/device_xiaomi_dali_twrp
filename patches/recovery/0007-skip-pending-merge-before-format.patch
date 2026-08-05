@@ -1,0 +1,19 @@
+diff --git a/partitionmanager.cpp b/partitionmanager.cpp
+index dc2db5fa..f17ebbc1 100755
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -1969,8 +1969,12 @@ int TWPartitionManager::Format_Data(void) {
+ #endif
+ 			if (metadata != NULL)
+ 				metadata->Mount(true);
+-			if (!Check_Pending_Merges())
+-				return false;
++			if (!android::base::GetBoolProperty("of.skip_format_pending_merge", false)) {
++				if (!Check_Pending_Merges())
++					return false;
++			} else {
++				LOGINFO("Skipping pending-merge check before data format (of.skip_format_pending_merge).\n");
++			}
+ 		}
+ 		ret = dat->Wipe_Encryption();
+ 	} else {

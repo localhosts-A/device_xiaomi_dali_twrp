@@ -1,0 +1,65 @@
+diff --git a/bootable/recovery/twrpinstall/twinstall.cpp b/bootable/recovery/twrpinstall/twinstall.cpp
+index abbae03..e35572a 100644
+--- a/bootable/recovery/twrpinstall/twinstall.cpp
++++ b/bootable/recovery/twrpinstall/twinstall.cpp
+@@ -343,6 +343,10 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+ 
+   DataManager::GetValue(TW_UNMOUNT_SYSTEM, unmount_system);
+   DataManager::GetValue(TW_UNMOUNT_VENDOR, unmount_vendor);
++  if (strncmp(path, "/sideload", 9) == 0) {
++    LOGINFO("Skipping vendor unmount for ADB sideload.\n");
++    unmount_vendor = 0;
++  }
+ 
+ #ifndef TW_OEM_BUILD
+   DataManager::GetValue(TW_SIGNED_ZIP_VERIFY_VAR, zip_verify);
+diff --git a/bootable/recovery/gui/action.cpp b/bootable/recovery/gui/action.cpp
+index 42e3079..b0bcd70 100644
+--- a/bootable/recovery/gui/action.cpp
++++ b/bootable/recovery/gui/action.cpp
+@@ -20,6 +20,7 @@
+ */
+ 
+ #include <stdarg.h>
++#include <errno.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -2168,6 +2169,9 @@ int GUIAction::adbsideloadcancel(std::string arg __unused)
+ 	sideload_child_pid = GetMiniAdbdPid();
+ 	if (!sideload_child_pid) {
+ 		LOGERR("Unable to get child ID\n");
++		sideload_child_pid = 0;
++		TWFunc::Fox_Property_Set("ctl.start", "adbd");
++		DataManager::SetValue("tw_page_done", "1"); // Release the sideload page after minadbd exited.
+ 		return 0;
+ 	}
+ 	::sleep(1);
+@@ -2175,8 +2179,26 @@ int GUIAction::adbsideloadcancel(std::string arg __unused)
+ 	kill(sideload_child_pid, SIGTERM);
+ 	int status;
+ 	LOGINFO("Waiting for child sideload process to exit.\n");
+-	waitpid(sideload_child_pid, &status, 0);
++	bool child_exited = false;
++	for (int attempt = 0; attempt < 5; ++attempt) {
++		const pid_t wait_result = waitpid(sideload_child_pid, &status, WNOHANG);
++		if (wait_result == sideload_child_pid || (wait_result < 0 && errno == ECHILD)) {
++			child_exited = true;
++			break;
++		}
++		if (wait_result < 0) {
++			LOGERR("Unable to wait for child sideload process: %s\n", strerror(errno));
++			break;
++		}
++		::sleep(1);
++	}
++	if (!child_exited) {
++		LOGINFO("Child sideload process did not exit; sending SIGKILL.\n");
++		kill(sideload_child_pid, SIGKILL);
++		waitpid(sideload_child_pid, &status, 0);
++	}
+ 	sideload_child_pid = 0;
++	TWFunc::Fox_Property_Set("ctl.start", "adbd");
+ 	DataManager::SetValue("tw_page_done", "1"); // For OpenRecoveryScript support
+ 	return 0;
+ }

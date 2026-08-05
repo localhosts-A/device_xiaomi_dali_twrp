@@ -1,0 +1,18 @@
+--- a/libfiemap/image_manager.cpp	2026-07-31 22:37:31.089272436 +0000
++++ b/libfiemap/image_manager.cpp	2026-07-31 22:37:31.073272475 +0000
+@@ -275,10 +275,14 @@
+ 
+     if (device_info_.is_recovery.value()) {
+         if (android::base::GetProperty("ro.crypto.state", "") == "encrypted") {
+-            if (android::base::GetProperty("twrp.decrypt.done", "") != "true") {
++            if (android::base::GetProperty("twrp.decrypt.done", "") != "true" &&
++                !android::base::GetBoolProperty("of.allow_spl_downgrade", false)) {
+                 LOG(ERROR) << "Cannot remove images backed by /data if data is encrypted";
+                 return false;
+             }
++            if (android::base::GetBoolProperty("of.allow_spl_downgrade", false)) {
++                LOG(WARNING) << "Allowing /data backing image deletion for SPL downgrade";
++            }
+         }
+     }
+ 

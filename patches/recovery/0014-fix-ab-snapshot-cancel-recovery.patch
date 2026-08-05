@@ -1,0 +1,35 @@
+diff --git a/libsnapshot/snapshot.cpp b/libsnapshot/snapshot.cpp
+--- a/libsnapshot/snapshot.cpp
++++ b/libsnapshot/snapshot.cpp
+@@ -252,7 +252,7 @@
+     if (state == UpdateState::Unverified) {
+         // We completed an update, but it can still be canceled if we haven't booted into it.
+         auto slot = GetCurrentSlot();
+-        if (slot != Slot::Target) {
++        if (slot != Slot::Target || device_->IsRecovery()) {
+             LOG(INFO) << "Canceling previously completed updates (if any)";
+             return RemoveAllUpdateState(file.get());
+         }
+@@ -1974,7 +1974,7 @@
+         //  - If partition is flashed or unknown, it is okay to delete snapshots.
+         //    Otherwise (UPDATED flag), only delete snapshots if they are not mapped
+         //    as dm-snapshot (for example, after merge completes).
+-        bool should_unmap = current_slot != Slot::Target;
++        bool should_unmap = current_slot != Slot::Target || device_->IsRecovery();
+         bool should_delete = ShouldDeleteSnapshot(flashing_status, current_slot, name);
+         if (should_unmap && android::base::EndsWith(name, device_->GetSlotSuffix())) {
+             // Something very unexpected has happened - we want to unmap this
+@@ -1992,6 +1992,13 @@
+         if (should_unmap && !UnmapPartitionWithSnapshot(lock, name)) {
+             partition_ok = false;
+         }
++        // In recovery, current-slot logical partitions are direct dm-linear
++        // mappings, so the guard above may skip unmapping them. Their stale
++        // COW devices still block a retry and must be removed.
++        if (device_->IsRecovery() &&
++            !DeleteDeviceIfExists(GetCowName(name), 4000ms)) {
++            partition_ok = false;
++        }
+         if (partition_ok && should_delete && !DeleteSnapshot(lock, name)) {
+             partition_ok = false;
+         }

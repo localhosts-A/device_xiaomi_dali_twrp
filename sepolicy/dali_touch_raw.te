@@ -1,0 +1,2 @@
+type dali_touch_raw_sysfs, fs_type, sysfs_type;
+allow init dali_touch_raw_sysfs:file { getattr open write };

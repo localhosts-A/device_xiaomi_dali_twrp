@@ -1,0 +1,37 @@
+# Recovery-only partition inventory derived from the current official fstab.
+# The complete official first-stage fstab remains in first_stage_ramdisk for
+# Android init; do not expose raw boot-chain, modem, or firmware partitions to
+# Recovery's PartitionManager.
+
+# Dynamic partitions required for Recovery mounts and ROM workflows.
+system /system erofs ro wait,slotselect,logical,first_stage_mount
+system /system ext4 ro wait,slotselect,logical,first_stage_mount
+system_ext /system_ext erofs ro wait,slotselect,logical,first_stage_mount
+system_ext /system_ext ext4 ro wait,slotselect,logical,first_stage_mount
+product /product erofs ro wait,slotselect,logical,first_stage_mount
+product /product ext4 ro wait,slotselect,logical,first_stage_mount
+vendor /vendor erofs ro wait,slotselect,logical,first_stage_mount
+vendor /vendor ext4 ro wait,slotselect,logical,first_stage_mount
+vendor_dlkm /vendor_dlkm erofs ro wait,slotselect,logical,first_stage_mount
+vendor_dlkm /vendor_dlkm ext4 ro wait,slotselect,logical,first_stage_mount
+odm_dlkm /odm_dlkm erofs ro wait,slotselect,logical,first_stage_mount
+odm_dlkm /odm_dlkm ext4 ro wait,slotselect,logical,first_stage_mount
+system_dlkm /system_dlkm erofs ro wait,slotselect,logical,first_stage_mount
+system_dlkm /system_dlkm ext4 ro wait,slotselect,logical,first_stage_mount
+
+# Keep ODM out of PartitionManager. beforemodules.sh mounts the verified active
+# ODM mapper read-only before touch modules probe, and it must remain mounted
+# for the Recovery session.
+
+# BootControl resolves the BCB through Recovery's fstab. This enables no
+# OrangeFox image-flash, storage, backup, or wipe target for the entry.
+/dev/block/by-name/misc /misc emmc defaults defaults
+
+/dev/block/by-name/metadata /metadata f2fs noatime,nosuid,nodev,discard wait,check,formattable,first_stage_mount
+/dev/block/by-name/userdata /data f2fs noatime,nosuid,nodev,discard,noflush_merge,fsync_mode=nobarrier,reserve_root=134217,resgid=1065,gc_merge,atgc,age_extent_cache,inlinecrypt wait,check,formattable,quota,latemount,resize,reservedsize=128m,checkpoint=fs,fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized,keydirectory=/metadata/vold/metadata_encryption,fsverity
+/dev/block/by-name/rescue /cache ext4 noatime,nosuid,nodev,noauto_da_alloc,discard wait,check,formattable,nofail
+
+# Keep vendor_boot as the only explicit image-flash target in this fstab.
+# PartitionManager creates /super separately for logical-partition handling.
+# All raw boot-chain and firmware partitions stay hidden from this inventory.
+/dev/block/by-name/vendor_boot /vendor_boot emmc defaults slotselect,flashimg

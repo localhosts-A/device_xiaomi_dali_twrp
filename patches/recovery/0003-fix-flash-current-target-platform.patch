@@ -1,0 +1,381 @@
+diff --git a/twrpRepacker.cpp b/twrpRepacker.cpp
+--- a/twrpRepacker.cpp
++++ b/twrpRepacker.cpp
+@@ -28,6 +28,7 @@
+ #include <dirent.h>
+ #include <fcntl.h>
+ #include <limits>
++#include <map>
+ #include <string>
+ #include <sys/stat.h>
+ #include <unistd.h>
+@@ -421,6 +422,281 @@ static bool CompareRetainedVendorRamdisks(const std::string& original, const std
+ 	return true;
+ }
+ 
++constexpr char kVendorBootMagic[] = "VNDRBOOT";
++constexpr size_t kVendorBootHeaderPrefixSize = 28;
++constexpr size_t kVendorBootHeaderVersionOffset = 8;
++constexpr size_t kVendorBootPageSizeOffset = 12;
++constexpr size_t kVendorBootRamdiskSizeOffset = 24;
++
++struct VendorBootRamdiskLayout {
++	uint32_t page_size = 0;
++	uint64_t payload_size = 0;
++};
++
++enum class CpioEntryKind {
++	kDirectory,
++	kFile,
++	kSymlink,
++};
++
++using CpioEntries = std::map<std::string, CpioEntryKind>;
++
++static bool GetRegularFileSize(const std::string& path, uint64_t* size) {
++	struct stat st {};
++	if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0)
++		return false;
++	*size = static_cast<uint64_t>(st.st_size);
++	return true;
++}
++
++static uint32_t ReadLittleEndian32(const uint8_t* value) {
++	return static_cast<uint32_t>(value[0]) |
++		(static_cast<uint32_t>(value[1]) << 8) |
++		(static_cast<uint32_t>(value[2]) << 16) |
++		(static_cast<uint32_t>(value[3]) << 24);
++}
++
++static bool IsPowerOfTwo(uint32_t value) {
++	return value != 0 && (value & (value - 1)) == 0;
++}
++
++static bool AlignUp(uint64_t value, uint32_t alignment, uint64_t* aligned) {
++	if (!IsPowerOfTwo(alignment))
++		return false;
++	const uint64_t padding = (static_cast<uint64_t>(alignment) - (value & (alignment - 1))) & (alignment - 1);
++	if (value > std::numeric_limits<uint64_t>::max() - padding)
++		return false;
++	*aligned = value + padding;
++	return true;
++}
++
++static bool ReadVendorBootRamdiskLayout(const std::string& image, const std::string& directory,
++		VendorBootRamdiskLayout* layout) {
++	std::array<uint8_t, kVendorBootHeaderPrefixSize> header{};
++	int fd = open(image.c_str(), O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++	const bool read_ok = ReadFullyAt(fd, header.data(), header.size(), 0);
++	close(fd);
++	if (!read_ok || std::memcmp(header.data(), kVendorBootMagic, sizeof(kVendorBootMagic) - 1) != 0 ||
++		ReadLittleEndian32(header.data() + kVendorBootHeaderVersionOffset) != 4)
++		return false;
++
++	const uint32_t page_size = ReadLittleEndian32(header.data() + kVendorBootPageSizeOffset);
++	if (page_size < 2048 || page_size > 16384 || !IsPowerOfTwo(page_size))
++		return false;
++	const uint64_t declared_size = ReadLittleEndian32(header.data() + kVendorBootRamdiskSizeOffset);
++
++	std::vector<std::string> ramdisks;
++	if (!ListVendorRamdisks(directory, &ramdisks))
++		return false;
++	uint64_t measured_size = 0;
++	for (const std::string& name : ramdisks) {
++		uint64_t size = 0;
++		if (!GetRegularFileSize(directory + "/" + name, &size) ||
++			size > std::numeric_limits<uint64_t>::max() - measured_size)
++			return false;
++		measured_size += size;
++	}
++	if (measured_size != declared_size)
++		return false;
++
++	layout->page_size = page_size;
++	layout->payload_size = measured_size;
++	return true;
++}
++
++static bool CanDirectlyReplaceRecoveryFragment(const VendorBootAvbInfo& avb, const std::string& image,
++		const std::string& directory, const std::string& inactive_recovery, const std::string& source_recovery,
++		bool* fits) {
++	VendorBootRamdiskLayout layout;
++	uint64_t inactive_recovery_size = 0;
++	uint64_t source_recovery_size = 0;
++	if (!ReadVendorBootRamdiskLayout(image, directory, &layout) ||
++		!GetRegularFileSize(inactive_recovery, &inactive_recovery_size) ||
++		!GetRegularFileSize(source_recovery, &source_recovery_size) ||
++		layout.payload_size < inactive_recovery_size)
++		return false;
++
++	uint64_t replacement_payload_size = layout.payload_size - inactive_recovery_size;
++	if (source_recovery_size > std::numeric_limits<uint64_t>::max() - replacement_payload_size)
++		return false;
++	replacement_payload_size += source_recovery_size;
++
++	uint64_t original_padded_size = 0;
++	uint64_t replacement_padded_size = 0;
++	if (!AlignUp(layout.payload_size, layout.page_size, &original_padded_size) ||
++		!AlignUp(replacement_payload_size, layout.page_size, &replacement_padded_size))
++		return false;
++
++	uint64_t predicted_preavb_size = avb.footer.original_image_size;
++	if (replacement_padded_size >= original_padded_size) {
++		const uint64_t growth = replacement_padded_size - original_padded_size;
++		if (growth > std::numeric_limits<uint64_t>::max() - predicted_preavb_size)
++			return false;
++		predicted_preavb_size += growth;
++	} else {
++		const uint64_t shrink = original_padded_size - replacement_padded_size;
++		if (shrink > predicted_preavb_size)
++			return false;
++		predicted_preavb_size -= shrink;
++	}
++
++	*fits = predicted_preavb_size <= avb.footer.vbmeta_offset;
++	return true;
++}
++
++static bool IsSafeCpioPath(const std::string& path) {
++	if (path.empty() || path.front() == '/' || path.back() == '/')
++		return false;
++	for (size_t start = 0; start < path.size();) {
++		const size_t slash = path.find('/', start);
++		const size_t end = slash == std::string::npos ? path.size() : slash;
++		if (end == start)
++			return false;
++		const std::string component = path.substr(start, end - start);
++		if (component == "." || component == "..")
++			return false;
++		for (char character : component) {
++			const bool allowed = (character >= 'a' && character <= 'z') ||
++				(character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') ||
++				character == '.' || character == '_' || character == '-' || character == '+' ||
++				character == '=' || character == '@' || character == '[' || character == ']';
++			if (!allowed)
++				return false;
++		}
++		if (slash == std::string::npos)
++			break;
++		start = slash + 1;
++	}
++	return true;
++}
++
++static bool ParseCpioEntries(const std::string& listing, CpioEntries* entries) {
++	entries->clear();
++	for (size_t start = 0; start < listing.size();) {
++		const size_t newline = listing.find('\n', start);
++		std::string line = listing.substr(start, newline == std::string::npos ? std::string::npos : newline - start);
++		if (!line.empty() && line.back() == '\r')
++			line.pop_back();
++		if (!line.empty()) {
++			const size_t first_tab = line.find('\t');
++			const size_t last_tab = line.rfind('\t');
++			if (first_tab == std::string::npos || last_tab == std::string::npos || first_tab == 0 || last_tab + 1 >= line.size())
++				return false;
++			CpioEntryKind kind;
++			switch (line.front()) {
++			case 'd': kind = CpioEntryKind::kDirectory; break;
++			case '-': kind = CpioEntryKind::kFile; break;
++			case 'l': kind = CpioEntryKind::kSymlink; break;
++			default: return false;
++			}
++			const std::string path = line.substr(last_tab + 1);
++			if (!IsSafeCpioPath(path) || !entries->emplace(path, kind).second)
++				return false;
++		}
++		if (newline == std::string::npos)
++			break;
++		start = newline + 1;
++	}
++	return !entries->empty();
++}
++
++static bool ListCpioEntries(const std::string& magiskboot, const std::string& cpio, CpioEntries* entries) {
++	std::string listing;
++	if (TWFunc::Exec_Cmd(ShellQuote(magiskboot) + " cpio " + ShellQuote(cpio) + " " +
++			ShellQuote("ls -r /"), listing) != 0)
++		return false;
++	return ParseCpioEntries(listing, entries);
++}
++
++static bool HasNonDirectoryAncestor(const CpioEntries& entries, const std::string& path) {
++	for (size_t slash = path.find('/'); slash != std::string::npos; slash = path.find('/', slash + 1)) {
++		const auto found = entries.find(path.substr(0, slash));
++		if (found != entries.end() && found->second != CpioEntryKind::kDirectory)
++			return true;
++	}
++	return false;
++}
++
++static bool VerifyCpioOverlay(const CpioEntries& platform, const CpioEntries& recovery) {
++	for (const auto& recovery_entry : recovery) {
++		const std::string& path = recovery_entry.first;
++		if (HasNonDirectoryAncestor(platform, path))
++			return false;
++		const auto platform_entry = platform.find(path);
++		if (recovery_entry.second == CpioEntryKind::kDirectory) {
++			if (platform_entry != platform.end() && platform_entry->second != CpioEntryKind::kDirectory)
++				return false;
++		} else if (platform_entry != platform.end()) {
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool TrimPlatformFragment(const std::string& magiskboot, const std::string& platform_cpio,
++		const std::string& recovery_cpio) {
++	CpioEntries platform_entries;
++	CpioEntries recovery_entries;
++	if (!ListCpioEntries(magiskboot, platform_cpio, &platform_entries) ||
++		!ListCpioEntries(magiskboot, recovery_cpio, &recovery_entries))
++		return false;
++
++	std::vector<std::string> removals;
++	for (const auto& recovery_entry : recovery_entries) {
++		const std::string& path = recovery_entry.first;
++		if (HasNonDirectoryAncestor(platform_entries, path)) {
++			LOGERR("Unsafe platform CPIO ancestor for Recovery path '%s'\n", path.c_str());
++			return false;
++		}
++		const auto platform_entry = platform_entries.find(path);
++		if (platform_entry == platform_entries.end())
++			continue;
++		if (recovery_entry.second == CpioEntryKind::kDirectory) {
++			if (platform_entry->second != CpioEntryKind::kDirectory) {
++				LOGERR("Unsafe platform CPIO type conflict at '%s'\n", path.c_str());
++				return false;
++			}
++			continue;
++		}
++		removals.push_back((platform_entry->second == CpioEntryKind::kDirectory ? "rm -r " : "rm ") + path);
++	}
++
++	std::string command = ShellQuote(magiskboot) + " cpio " + ShellQuote(platform_cpio);
++	for (const std::string& removal : removals) {
++		if (command.size() > 65536 - removal.size() - 3) {
++			LOGERR("Too many platform CPIO entries to trim safely\n");
++			return false;
++		}
++		command += " " + ShellQuote(removal);
++	}
++	if (!removals.empty() && TWFunc::Exec_Cmd(command, false) != 0)
++		return false;
++
++	CpioEntries trimmed_entries;
++	return ListCpioEntries(magiskboot, platform_cpio, &trimmed_entries) &&
++		VerifyCpioOverlay(trimmed_entries, recovery_entries);
++}
++
++static bool IsUncompressedCpio(const std::string& path) {
++	std::array<char, 6> magic{};
++	int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++	const bool read_ok = ReadFullyAt(fd, magic.data(), magic.size(), 0);
++	close(fd);
++	return read_ok && (std::memcmp(magic.data(), "070701", magic.size()) == 0 ||
++		std::memcmp(magic.data(), "070702", magic.size()) == 0);
++}
++
++static bool MakeUncompressedCpio(const std::string& magiskboot, const std::string& input, const std::string& output) {
++	if (IsUncompressedCpio(input))
++		return TWFunc::copy_file(input, output, 0644, false) == 0;
++	return TWFunc::Exec_Cmd(ShellQuote(magiskboot) + " decompress " + ShellQuote(input) + " " +
++		ShellQuote(output), false) == 0 && IsUncompressedCpio(output);
++}
++
+ static bool FlashCurrentVendorBootRecoveryFragment(TWPartition* target_partition, const std::string& slot) {
+ 	if (!target_partition || !TWFunc::Path_Exists(TWFunc::Get_MagiskBoot())) {
+ 		LOGERR("Vendor_boot fragment reflash prerequisites are unavailable\n");
+@@ -492,18 +768,59 @@ static bool FlashCurrentVendorBootRecoveryFragment(TWPartition* target_partition
+ 			" unpack --vendor -n -h vendor_boot.img", false) != 0)
+ 		return false;
+ 
+-	const std::string inactive_platform = inactive_dir + "/vendor_ramdisk_.cpio";
+ 	const std::string inactive_recovery = inactive_dir + "/vendor_ramdisk_recovery.cpio";
+ 	const std::string inactive_dtb = inactive_dir + "/dtb";
+-	if (!TWFunc::Path_Exists(inactive_platform) || !TWFunc::Path_Exists(inactive_recovery) || !TWFunc::Path_Exists(inactive_dtb) ||
+-		TWFunc::copy_file(source_recovery, inactive_recovery, 0644, false) != 0)
++	if (!TWFunc::Path_Exists(inactive_recovery) || !TWFunc::Path_Exists(inactive_dtb))
+ 		return false;
+ 
+-	DataManager::SetProgress(.35);
+-	const std::string rebuilt_image = inactive_dir + "/new-vendor_boot.img";
+-	if (TWFunc::Exec_Cmd("cd " + ShellQuote(inactive_dir) + " && " + ShellQuote(magiskboot) +
+-			" repack -n vendor_boot.img " + ShellQuote(rebuilt_image), false) != 0)
++	VendorBootAvbInfo inactive_avb;
++	bool direct_repack_fits = false;
++	if (!ReadVendorBootAvb(inactive_image, destination_size, &inactive_avb) ||
++		!CanDirectlyReplaceRecoveryFragment(inactive_avb, inactive_image, inactive_dir, inactive_recovery,
++			source_recovery, &direct_repack_fits)) {
++		LOGERR("Unable to calculate inactive vendor_boot capacity safely\n");
++		gui_print("Unable to validate inactive vendor_boot capacity; no partition was written.\n");
+ 		return false;
++	}
++
++	DataManager::SetProgress(.35);
++	const std::string rebuilt_image = workdir + "/new-vendor_boot.img";
++	std::string expected_dir = inactive_dir;
++	std::string expected_recovery = source_recovery;
++	std::string expected_dtb = inactive_dtb;
++	bool verify_uncompressed = false;
++	if (direct_repack_fits) {
++		if (TWFunc::copy_file(source_recovery, inactive_recovery, 0644, false) != 0 ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(inactive_dir) + " && " + ShellQuote(magiskboot) +
++				" repack -n vendor_boot.img " + ShellQuote(rebuilt_image), false) != 0)
++			return false;
++	} else {
++		gui_print("Trimming only the inactive platform fragment entries overridden by Recovery...\n");
++		const std::string trim_dir = workdir + "/trim";
++		const std::string source_recovery_raw = workdir + "/source-recovery.cpio";
++		if (!TWFunc::Recursive_Mkdir(trim_dir) ||
++			!MakeUncompressedCpio(magiskboot, source_recovery, source_recovery_raw) ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(trim_dir) + " && " + ShellQuote(magiskboot) +
++				" unpack --vendor -h " + ShellQuote(inactive_image), false) != 0)
++			return false;
++
++		const std::string trim_platform = trim_dir + "/vendor_ramdisk_.cpio";
++		const std::string trim_recovery = trim_dir + "/vendor_ramdisk_recovery.cpio";
++		const std::string trim_dtb = trim_dir + "/dtb";
++		if (!TWFunc::Path_Exists(trim_platform) || !TWFunc::Path_Exists(trim_recovery) || !TWFunc::Path_Exists(trim_dtb) ||
++			!TrimPlatformFragment(magiskboot, trim_platform, source_recovery_raw) ||
++			TWFunc::copy_file(source_recovery_raw, trim_recovery, 0644, false) != 0 ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(trim_dir) + " && " + ShellQuote(magiskboot) +
++				" repack " + ShellQuote(inactive_image) + " " + ShellQuote(rebuilt_image), false) != 0) {
++			LOGERR("Unable to trim and rebuild the inactive platform fragment\n");
++			gui_print("Unable to trim the inactive platform fragment safely; no partition was written.\n");
++			return false;
++		}
++		expected_dir = trim_dir;
++		expected_recovery = source_recovery_raw;
++		expected_dtb = trim_dtb;
++		verify_uncompressed = true;
++	}
+ 
+ 	if (!TWFunc::Path_Exists(rebuilt_image) || !RepairVendorBootAvb(rebuilt_image, destination_size)) {
+ 		LOGERR("Unable to repair and verify the inactive vendor_boot AVB footer\n");
+@@ -511,12 +828,13 @@ static bool FlashCurrentVendorBootRecoveryFragment(TWPartition* target_partition
+ 		return false;
+ 	}
+ 
+-	if (TWFunc::Exec_Cmd("cd " + ShellQuote(verify_dir) + " && " + ShellQuote(magiskboot) +
+-			" unpack --vendor -n -h " + ShellQuote(rebuilt_image), false) != 0 ||
+-		!CompareRetainedVendorRamdisks(inactive_dir, verify_dir) ||
+-		!CompareFiles(inactive_dtb, verify_dir + "/dtb") ||
+-		!CompareFiles(source_recovery, verify_dir + "/vendor_ramdisk_recovery.cpio") ||
+-		!CompareOptionalFile(inactive_dir + "/vendor_bootconfig", verify_dir + "/vendor_bootconfig")) {
+-		LOGERR("Rebuilt vendor_boot did not preserve the inactive platform fragments\n");
++	const std::string unpack_option = verify_uncompressed ? " unpack --vendor -h " : " unpack --vendor -n -h ";
++	if (TWFunc::Exec_Cmd("cd " + ShellQuote(verify_dir) + " && " + ShellQuote(magiskboot) + unpack_option +
++			ShellQuote(rebuilt_image), false) != 0 ||
++		!CompareRetainedVendorRamdisks(expected_dir, verify_dir) ||
++		!CompareFiles(expected_dtb, verify_dir + "/dtb") ||
++		!CompareFiles(expected_recovery, verify_dir + "/vendor_ramdisk_recovery.cpio") ||
++		!CompareOptionalFile(expected_dir + "/vendor_bootconfig", verify_dir + "/vendor_bootconfig")) {
++		LOGERR("Rebuilt vendor_boot did not preserve the selected target fragments\n");
+ 		return false;
+ 	}

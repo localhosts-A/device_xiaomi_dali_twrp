@@ -1,0 +1,125 @@
+<?xml version="1.0"?>
+<recovery>
+	<templates>
+		<template name="statusbarinfo">
+			<!-- Time, etc. -->
+			<text style="text_status">
+				<condition var1="show_cpu_temp" var2="0"/>
+				<condition var1="center_clock" op="!=" var2="2"/>
+				<placement x="80" y="%status_info_y_shifted%"/>
+				<text>%tw_storage_free_size% MB</text>
+			</text>
+			<text style="text_status">
+				<condition var1="show_cpu_temp" var2="1"/>
+				<condition var1="center_clock" op="!=" var2="2"/>
+				<placement x="80" y="%status_info_y_shifted%"/>
+				<text>{@cpu_temp}</text>
+			</text>
+			<text style="text_status">
+				<condition var1="tw_simulate_actions" var2="1"/>
+				<placement x="%center_x%" y="%status_info_y_shifted%" placement="5"/>
+				<text>{@simulating}</text>
+			</text>
+
+			<text style="text_status">
+				<condition var1="center_clock" var2="2"/>
+				<placement x="80" y="%status_info_y_shifted%"/>
+				<text>%tw_time%</text>
+			</text>
+			<text style="text_status">
+				<placement x="%status_right_x%" y="%status_info_y_shifted%" placement="1"/>
+				<condition var1="center_clock" var2="0"/>
+				<text>%tw_time%</text>
+			</text>
+			<text style="text_status">
+				<placement x="%center_x%" y="%status_info_y_shifted%" placement="5"/>
+				<condition var1="center_clock" var2="1"/>
+				<condition var1="tw_simulate_actions" op="!=" var2="1"/>
+				<text>%tw_time%</text>
+			</text>
+
+			<!-- Battery -->
+			<!-- Center clock battery styles -->
+			<battery>
+				<placement x="%status_right_x%" y="%battery_y_shifted%" w="26" h="44"/>
+				<condition var1="center_clock" var2="1"/>
+				<condition var1="style_battery" op="!=" var2="1"/>
+				<condition var1="style_battery" op="!=" var2="2"/>
+			</battery>
+			<battery style="battery_circle">
+				<placement x="%status_right_x%" y="%battery_circle_y_shifted%" w="48" h="48" />
+				<condition var1="center_clock" var2="1"/>
+				<condition var1="style_battery" var2="1"/>
+				<condition var1="style_battery" op="!=" var2="2"/>
+			</battery>
+			<battery style="battery_style_2">
+				<placement x="%status_right_x%" y="%battery_2_y_shifted%" w="62" h="25"/>
+				<condition var1="center_clock" var2="1"/>
+				<condition var1="style_battery" var2="2"/>
+			</battery>
+
+			<!-- Right clock battery styles -->
+			<battery>
+				<placement x="%status_right_x%" y="%battery_y_shifted%" w="26" h="44"/>
+				<condition var1="center_clock" var2="2"/>
+				<condition var1="style_battery" op="!=" var2="1"/>
+				<condition var1="style_battery" op="!=" var2="2"/>
+			</battery>
+			<battery style="battery_circle">
+				<placement x="%status_right_x%" y="%battery_circle_y_shifted%" w="48" h="48" />
+				<condition var1="center_clock" var2="2"/>
+				<condition var1="style_battery" var2="1"/>
+			</battery>
+			<battery style="battery_style_2">
+				<placement x="%status_right_x%" y="%battery_2_y_shifted%" w="62" h="25"/>
+				<condition var1="center_clock" var2="2"/>
+				<condition var1="style_battery" var2="2"/>
+			</battery>
+
+			<!-- Left clock battery styles -->
+			<battery>
+				<placement x="%battery_12_x%" y="%battery_y_shifted%" w="26" h="44"/>
+				<condition var1="center_clock" var2="0"/>
+				<condition var1="tw_military_time" op="!=" var2="1"/>
+				<condition var1="style_battery" op="!=" var2="1"/>
+				<condition var1="style_battery" op="!=" var2="2"/>
+			</battery>
+			<battery style="battery_circle">
+				<placement x="%battery_12_x%" y="%battery_circle_y_shifted%" w="48" h="48" />
+				<condition var1="center_clock" var2="0"/>
+				<condition var1="tw_military_time" op="!=" var2="1"/>
+				<condition var1="style_battery" op="!=" var2="2"/>
+				<condition var1="style_battery" var2="1"/>
+			</battery>
+			<battery style="battery_style_2">
+				<placement x="%battery_2_12_x%" y="%battery_2_y_shifted%" w="62" h="25"/>
+				<condition var1="center_clock" var2="0"/>
+				<condition var1="tw_military_time" op="!=" var2="1"/>
+				<condition var1="style_battery" var2="2"/>
+			</battery>
+
+			<!-- Left clock military time battery styles -->
+			<battery>
+				<placement x="%battery_24_x%" y="%battery_y_shifted%" w="26" h="44"/>
+				<condition var1="center_clock" var2="0"/>
+				<condition var1="tw_military_time" var2="1"/>
+				<condition var1="style_battery" op="!=" var2="1"/>
+				<condition var1="style_battery" op="!=" var2="2"/>
+			</battery>
+			<battery style="battery_circle">
+				<placement x="%battery_24_x%" y="%battery_circle_y_shifted%" w="48" h="48" />
+				<condition var1="center_clock" var2="0"/>
+				<condition var1="tw_military_time" var2="1"/>
+				<condition var1="style_battery" var2="1"/>
+			</battery>
+			<battery style="battery_style_2">
+				<placement x="%battery_2_24_x%" y="%battery_2_y_shifted%" w="62" h="25"/>
+				<condition var1="center_clock" var2="0"/>
+				<condition var1="tw_military_time" var2="1"/>
+				<condition var1="style_battery" var2="2"/>
+			</battery>
+
+
+		</template>
+	</templates>
+</recovery>

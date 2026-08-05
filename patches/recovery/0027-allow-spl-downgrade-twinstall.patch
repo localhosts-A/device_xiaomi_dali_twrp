@@ -1,0 +1,18 @@
+--- a/twrpinstall/twinstall.cpp	2026-07-31 22:15:40.316591038 +0000
++++ b/twrpinstall/twinstall.cpp	2026-07-31 22:15:40.304591068 +0000
+@@ -215,6 +215,15 @@
+ 	FILE* child_data;
+ 	pipe(pipe_fd);
+ 
++	// OrangeFox "Allow SPL downgrade" toggle: expose it to update_engine so
++	// SPL-downgrade OTAs (and payload timestamp downgrades) are permitted.
++	if (DataManager::GetIntValue("tw_allow_spl_downgrade") != 0) {
++		property_set("of.allow_spl_downgrade", "1");
++		gui_print("SPL downgrade is enabled.\n");
++	} else {
++		property_set("of.allow_spl_downgrade", "0");
++	}
++
+ 	std::vector<std::string> args;
+     if (ztype == UPDATE_BINARY_ZIP_TYPE) {
+ 		ret_val = update_binary_command(path, 0, pipe_fd[1], &args);

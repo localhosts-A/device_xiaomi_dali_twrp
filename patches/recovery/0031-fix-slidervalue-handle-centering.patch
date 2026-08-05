@@ -1,0 +1,20 @@
+diff --git a/bootable/recovery/gui/slidervalue.cpp b/bootable/recovery/gui/slidervalue.cpp
+--- a/bootable/recovery/gui/slidervalue.cpp
++++ b/bootable/recovery/gui/slidervalue.cpp
+@@ -316,9 +316,15 @@
+ 	if (mHandleImage && mHandleImage->GetResource())
+ 	{
+ 		gr_surface s = mHandleImage->GetResource();
++		int handleW = mHandleImage->GetWidth();
++		int handleH = mHandleImage->GetHeight();
+ 		if (mDragging && mHandleHoverImage && mHandleHoverImage->GetResource())
++		{
+ 			s = mHandleHoverImage->GetResource();
+-		gr_blit(s, 0, 0, mSliderW, mSliderH, sliderX, mLineY + (mLineH/2 - mSliderH/2));
++			handleW = mHandleHoverImage->GetWidth();
++			handleH = mHandleHoverImage->GetHeight();
++		}
++		gr_blit(s, 0, 0, handleW, handleH, sliderX, mLineY + (mLineH/2 - handleH/2));
+ 	}
+ 	else
+ 	{

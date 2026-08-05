@@ -1,0 +1,77 @@
+--- a/twrp-functions.cpp
++++ b/twrp-functions.cpp
+@@ -2566,6 +2566,33 @@
+   	  finger_print = TWFunc::File_Property_Get (orangefox_cfg, "ROM_FINGERPRINT");
+     }
+ 
++  // Prefer the device-codename fingerprint from vendor build.prop (the
++  // recovery prop may expose a generic alps value from a duplicate key).
++  bool vendor_mounted = TWFunc::Path_Exists("/vendor/build.prop");
++  if (!vendor_mounted) {
++    std::string slot = TWFunc::Fox_Property_Get("ro.boot.slot_suffix");
++    if (slot.empty()) slot = "_a";
++    TWFunc::Exec_Cmd("mkdir -p /vendor; mount -t erofs -o ro /dev/block/mapper/vendor" + slot + " /vendor 2>/dev/null");
++  }
++  if (TWFunc::Path_Exists("/vendor/build.prop")) {
++    std::ifstream vfp("/vendor/build.prop");
++    std::string line, dali_fp;
++    while (std::getline(vfp, line)) {
++      if (line.rfind("ro.vendor.build.fingerprint=", 0) == 0) {
++        std::string val = line.substr(28);
++        if (val.find("dali") != std::string::npos)
++          dali_fp = val; // keep the last dali-branded entry
++      }
++    }
++    if (!dali_fp.empty())
++      finger_print = dali_fp;
++    LOGINFO("dali-fp: vendor_build_prop=%d chosen=%s\n", TWFunc::Path_Exists("/vendor/build.prop"), finger_print.c_str());
++  } else {
++    LOGINFO("dali-fp: vendor/build.prop missing\n");
++  }
++  if (!vendor_mounted)
++    TWFunc::Exec_Cmd("umount /vendor 2>/dev/null");
++
+    // Treble ?
+    if (strncmp(fox_is_treble_rom_installed.c_str(), "1", 1) == 0)
+       Fox_Current_ROM_IsTreble = 1;
+@@ -2642,15 +2669,19 @@
+   rom_desc = GetInstalledRom();
+   if (!rom_desc.empty()) 
+     {  
+-  	if (fox_is_miui_rom_installed == "1" || TWFunc::Fox_Property_Get("orangefox.miui.rom") == "1")
+-     	  {
+-  	     Fox_Current_ROM_IsMIUI = 1;
+-  	     gui_msg(Msg("fox_miui_rom=* MIUI ROM (SDK:{1}, {2})")(rom_sdk)(sdknum_to_text(rom_sdk).c_str()));
+-          } 
+-  	else
+-     	  {
+-     	     gui_msg(Msg("fox_custom_rom=* Custom ROM (SDK:{1}, {2})")(rom_sdk)(sdknum_to_text(rom_sdk).c_str()));
+-    	  }
++  		{
++		std::string rom_label = "Custom ROM";
++		if (fox_is_miui_rom_installed == "1" || TWFunc::Fox_Property_Get("orangefox.miui.rom") == "1")
++		{
++			Fox_Current_ROM_IsMIUI = 1;
++			rom_label = "MIUI ROM";
++		}
++		// HyperOS 3 (Xiaomi OS3.x) recognition from the official fingerprint.
++		if (finger_print.find("OS3.") != std::string::npos ||
++		    incr_version.find("OS3.") != std::string::npos)
++			rom_label = "HyperOS 3 ROM";
++		gui_msg(Msg("fox_rom_label=* {1} (SDK:{2}, {3})")(rom_label)(rom_sdk)(sdknum_to_text(rom_sdk).c_str()));
++	}
+         gui_print("* %s\n", rom_desc.c_str());
+         
+         if (!incr_version.empty())
+--- a/gui/theme/common/languages/en.xml
++++ b/gui/theme/common/languages/en.xml
+@@ -1012,7 +1012,8 @@
+ 		<string name="fox_vab_yes">* Virtual_AB: yes</string>
+ 		<string name="fox_vab_no">* Virtual_AB: no</string>
+ 		<string name="fox_kernel">* Kernel:     {1}</string>
+-		<string name="fox_miui_rom">* MIUI ROM (SDK:{1}, {2})</string>
++		<string name="fox_miui_rom">* MIUI ROM (SDK:{1}, {2})</string>	<string name="fox_rom_label">* {1} (SDK:{2}, {3})</string>
++
+ 		<string name="fox_custom_rom">* Custom ROM (SDK:{1}, {2})</string>
+ 		<string name="fox_fingerprint">* Fingerprint: {1}</string>
+ 		<string name="fox_no_rom">* No ROM.</string>

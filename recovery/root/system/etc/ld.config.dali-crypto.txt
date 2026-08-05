@@ -1,0 +1,40 @@
+dir.recovery=/system/bin
+# Match Android's generated vendor linker namespace for official vendor/ODM HALs.
+dir.vendor=/odm/bin
+dir.vendor=/odm/bin/hw
+dir.vendor=/vendor/bin
+dir.vendor=/vendor/bin/hw
+
+[recovery]
+namespace.default.isolated = false
+namespace.default.search.paths = /system/${LIB}
+namespace.default.search.paths += /vendor/${LIB}
+namespace.default.search.paths += /odm/${LIB}
+namespace.default.asan.search.paths = /data/asan/system/${LIB}
+namespace.default.asan.search.paths += /system/${LIB}
+namespace.default.hwasan.search.paths = /system/${LIB}/hwasan
+namespace.default.hwasan.search.paths += /system/${LIB}
+
+[vendor]
+additional.namespaces = system
+namespace.default.isolated = true
+namespace.default.visible = true
+namespace.default.search.paths = /odm/${LIB}
+namespace.default.search.paths += /vendor/${LIB}
+namespace.default.search.paths += /vendor/${LIB}/hw
+namespace.default.search.paths += /vendor/${LIB}/egl
+namespace.default.permitted.paths = /odm
+namespace.default.permitted.paths += /vendor
+namespace.default.permitted.paths += /system/vendor
+namespace.default.links = system
+namespace.default.link.system.shared_libs = libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libRS.so:libandroid_net.so:libapexsupport.so:libbinder_ndk.so:libc.so:libcgrouprc.so:libclang_rt.asan-aarch64-android.so:libclang_rt.asan-arm-android.so:libclang_rt.hwasan-aarch64-android.so:libdl.so:libft2.so:liblog.so:libm.so:libmediandk.so:libnativewindow.so:libselinux.so:libsync.so:libvendorsupport.so:libvndksupport.so:libvulkan.so:libdl_android.so:libclang_rt.ubsan_standalone-aarch64-android.so:libclang_rt.ubsan_standalone-arm-android.so
+
+namespace.system.isolated = false
+# Crypto HALs register with the Android 14 Recovery servicemanager.
+namespace.system.search.paths = /system/${LIB}
+namespace.system.search.paths += /system_root/system/${LIB}
+namespace.system.search.paths += /system_root/system_ext/${LIB}
+namespace.system.permitted.paths = /system_root/system
+namespace.system.permitted.paths += /system_root/system_ext
+namespace.system.permitted.paths += /system
+namespace.system.permitted.paths += /apex/com.android.runtime/${LIB}/bionic

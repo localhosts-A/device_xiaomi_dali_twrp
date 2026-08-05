@@ -1,0 +1,22 @@
+diff --git a/twrp-functions.cpp b/twrp-functions.cpp
+index fd46b07f..2275a2e6 100755
+--- a/twrp-functions.cpp
++++ b/twrp-functions.cpp
+@@ -4952,8 +4952,16 @@ string TWFunc::Fox_Property_Get(string Prop_Name) {
+ }
+ 
+ bool TWFunc::Fox_Property_Set(const std::string Prop_Name, const std::string Value) {
++  // Skip redundant writes to read-only properties that already carry the
++  // target value; bionic otherwise logs "Unable to set property ... 0xb".
++  if (Fox_Property_Get(Prop_Name) == Value)
++    return true;
+   usleep(2048);
+-  bool res = android::base::SetProperty(Prop_Name, Value);
++  // ro.* properties are read-only once set; attempt the change through the
++  // resetprop fallback directly to avoid the bionic error line.
++  bool res = false;
++  if (Prop_Name.rfind("ro.", 0) != 0)
++    res = android::base::SetProperty(Prop_Name, Value);
+   if (!res && Fox_Property_Get(Prop_Name) != Value) {
+     	usleep(1028);
+ 	string tmp = "\"";

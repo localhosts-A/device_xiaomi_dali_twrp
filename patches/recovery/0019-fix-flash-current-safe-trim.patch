@@ -1,0 +1,65 @@
+--- a/twrpRepacker.cpp	2026-07-31 18:54:40.395046392 +0000
++++ b/twrpRepacker.cpp	2026-07-31 18:54:40.383046421 +0000
+@@ -795,14 +795,54 @@
+ 				" repack -n vendor_boot.img " + ShellQuote(rebuilt_image), false) != 0)
+ 			return false;
+ 	} else {
+-		// Trimming the inactive platform fragment makes the merged ramdisk
+-		// unfit for a normal boot on that slot (first-stage init loses the
+-		// platform fstab/ueventd and panics looking for boot_*, super,
+-		// metadata, vbmeta_*). Refuse to write instead of breaking the
+-		// target system.
+-		LOGERR("Inactive vendor_boot cannot fit the OrangeFox recovery fragment without trimming the normal-boot platform\n");
+-		gui_print("The inactive vendor_boot cannot fit this OrangeFox recovery fragment while preserving its platform; no partition was written.\n");
+-		return false;
++		// Safe trim: remove from the inactive platform only entries that are
++		// byte-identical in the slot's own official recovery fragment. This
++		// frees the space needed for the ramdisk-backed OrangeFox fragment
++		// while keeping normal-boot platform files (sepolicy, ueventd, init,
++		// fstab) intact.
++		gui_print("Trimming only inactive platform entries duplicated by the official Recovery fragment...\n");
++		const std::string trim_dir = workdir + "/trim";
++		const std::string source_recovery_raw = workdir + "/source-recovery.cpio";
++		if (!TWFunc::Recursive_Mkdir(trim_dir) ||
++			!MakeUncompressedCpio(magiskboot, source_recovery, source_recovery_raw) ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(trim_dir) + " && " + ShellQuote(magiskboot) +
++				" unpack --vendor -h " + ShellQuote(inactive_image), false) != 0)
++			return false;
++
++		const std::string trim_platform = trim_dir + "/vendor_ramdisk_.cpio";
++		const std::string trim_recovery_official = trim_dir + "/vendor_ramdisk_recovery.cpio";
++		const std::string trim_dtb = trim_dir + "/dtb";
++		if (!TWFunc::Path_Exists(trim_platform) || !TWFunc::Path_Exists(trim_recovery_official) || !TWFunc::Path_Exists(trim_dtb) ||
++			TWFunc::Exec_Cmd(ShellQuote("/system/bin/sh") + " " + ShellQuote("/system/bin/dali-safe-trim.sh") +
++				" " + ShellQuote(magiskboot) + " " + ShellQuote(trim_platform) + " " + ShellQuote(trim_recovery_official), false) != 0 ||
++			TWFunc::copy_file(source_recovery_raw, trim_recovery_official, 0644, false) != 0) {
++			LOGERR("Unable to safe-trim the inactive platform fragment\n");
++			gui_print("Unable to safe-trim the inactive platform fragment safely; no partition was written.\n");
++			return false;
++		}
++
++		const std::string repack_dir = trim_dir + "/gzip";
++		const std::string repack_platform = repack_dir + "/vendor_ramdisk_.cpio";
++		const std::string repack_recovery = repack_dir + "/vendor_ramdisk_recovery.cpio";
++		if (!TWFunc::Recursive_Mkdir(repack_dir) ||
++			TWFunc::copy_file(trim_platform, repack_platform, 0644, false) != 0 ||
++			TWFunc::copy_file(trim_recovery_official, repack_recovery, 0644, false) != 0 ||
++			TWFunc::copy_file(trim_dtb, repack_dir + "/dtb", 0644, false) != 0 ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(repack_dir) +
++				" && /system/bin/gzip -c vendor_ramdisk_.cpio > vendor_ramdisk_.cpio.gz" +
++				" && mv -f vendor_ramdisk_.cpio.gz vendor_ramdisk_.cpio" +
++				" && /system/bin/gzip -c vendor_ramdisk_recovery.cpio > vendor_ramdisk_recovery.cpio.gz" +
++				" && mv -f vendor_ramdisk_recovery.cpio.gz vendor_ramdisk_recovery.cpio", false) != 0 ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(repack_dir) + " && " + ShellQuote(magiskboot) +
++				" repack " + ShellQuote(inactive_image) + " " + ShellQuote(rebuilt_image), false) != 0) {
++			LOGERR("Unable to safe-trim and rebuild the inactive vendor_boot\n");
++			gui_print("Unable to safe-trim and rebuild the inactive vendor_boot; no partition was written.\n");
++			return false;
++		}
++		expected_dir = trim_dir;
++		expected_recovery = source_recovery_raw;
++		expected_dtb = trim_dtb;
++		verify_uncompressed = true;
+ 	}
+ 
+ 	if (!TWFunc::Path_Exists(rebuilt_image) || !RepairVendorBootAvb(rebuilt_image, destination_size)) {

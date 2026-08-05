@@ -1,0 +1,38 @@
+diff --git a/partition.cpp b/partition.cpp
+index c437cc77..8bad5faf 100644
+--- a/partition.cpp
++++ b/partition.cpp
+@@ -38,6 +38,7 @@
+ #include <sstream>
+ #include <android-base/properties.h>
+ #include <libsnapshot/snapshot.h>
++#include <fs_mgr_dm_linear.h>
+ 
+ #include "cutils/properties.h"
+ #include "libblkid/include/blkid.h"
+@@ -2261,9 +2262,22 @@ bool TWPartition::Wipe_Encryption() {
+ 	if (!UnMount(true))
+ 		return false;
+ 	if (Is_Decrypted && !Decrypted_Block_Device.empty()) {
+-//		if (delete_crypto_blk_dev((char*)("userdata")) != 0) {
+-//			LOGERR("Error deleting crypto block device, continuing anyway.\n");
+-//		}
++		// The /data fstab entry may map userdata through a default-key dm
++		// device (inline-crypto devices). Destroy the mapping before
++		// formatting so make_f2fs can open the raw partition; fs_mgr
++		// recreates it when /data is next mounted.
++		std::string decrypted_name = Decrypted_Block_Device;
++		size_t sep = decrypted_name.rfind('/');
++		if (sep != std::string::npos)
++			decrypted_name = decrypted_name.substr(sep + 1);
++		if (!decrypted_name.empty()) {
++			std::string mapper_path = "/dev/block/mapper/" + decrypted_name;
++			if (access(mapper_path.c_str(), F_OK) == 0) {
++				if (!android::fs_mgr::DestroyLogicalPartition(decrypted_name)) {
++					LOGERR("Error deleting crypto block device %s, continuing anyway.\n", decrypted_name.c_str());
++				}
++			}
++		}
+ 	}
+ #endif
+ 	Has_Data_Media = false;

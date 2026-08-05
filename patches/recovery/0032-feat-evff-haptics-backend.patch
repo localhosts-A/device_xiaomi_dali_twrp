@@ -1,0 +1,129 @@
+diff --git a/bootable/recovery/minuitwrp/events.cpp b/bootable/recovery/minuitwrp/events.cpp
+index e497df62..e771815e 100644
+--- a/bootable/recovery/minuitwrp/events.cpp
++++ b/bootable/recovery/minuitwrp/events.cpp
+@@ -27,6 +27,7 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <fstream>
++#include <errno.h>
+ #ifdef USE_QTI_AIDL_HAPTICS_FIX_OFF
+ #include <thread>
+ #endif
+@@ -147,12 +148,116 @@ int write_to_file(const std::string& fn, const std::string& line) {
+ 
+ #ifndef TW_NO_HAPTICS
+ #ifndef TW_HAPTICS_TSPDRV
++static int vibrate_force_feedback(int timeout_ms)
++{
++    LOGINFO("dali-evff: trying force-feedback haptics (%d ms)\n", timeout_ms);
++    if (timeout_ms <= 0)
++        return -1;
++    DIR* dir = opendir("/dev/input");
++    if (dir == NULL)
++        return -1;
++
++#define FF_BITS_PER_LONG (sizeof(long) * 8)
++#define FF_NBITS(x) ((((x)-1)/FF_BITS_PER_LONG)+1)
++#define FF_OFF(x)   ((x)%FF_BITS_PER_LONG)
++#define FF_LONG(x)  ((x)/FF_BITS_PER_LONG)
++#define FF_TEST_BIT(bit, array) ((array[FF_LONG(bit)] >> FF_OFF(bit)) & 1)
++
++    int result = -1;
++    struct dirent* de;
++    while ((de = readdir(dir)) != NULL) {
++        if (strncmp(de->d_name, "event", 5) != 0)
++            continue;
++        std::string path = std::string("/dev/input/") + de->d_name;
++        int fd = open(path.c_str(), O_RDWR);
++        if (fd < 0) {
++            LOGINFO("dali-evff: open %s failed errno=%d\n", path.c_str(), errno);
++            continue;
++        }
++
++        unsigned long ff_bits[4];
++        memset(ff_bits, 0, sizeof(ff_bits));
++        int bits_rc = ioctl(fd, EVIOCGBIT(EV_FF, sizeof(ff_bits)), ff_bits);
++        LOGINFO("dali-evff: %s open=ok bits_rc=%d errno=%d bits=%016lx %016lx\n",
++                path.c_str(), bits_rc, errno, ff_bits[0], ff_bits[1]);
++        if (bits_rc >= 0) {
++            struct ff_effect effect;
++            memset(&effect, 0, sizeof(effect));
++            effect.id = -1;
++            effect.replay.delay = 0;
++            effect.replay.length = timeout_ms;
++
++            if (FF_TEST_BIT(FF_RUMBLE, ff_bits)) {
++                effect.type = FF_RUMBLE;
++                effect.u.rumble.strong_magnitude = 0xffff;
++                effect.u.rumble.weak_magnitude = 0xffff;
++            } else if (FF_TEST_BIT(FF_PERIODIC, ff_bits)) {
++                effect.type = FF_PERIODIC;
++                effect.u.periodic.waveform = FF_TEST_BIT(FF_SINE, ff_bits) ? FF_SINE : FF_SQUARE;
++                effect.u.periodic.period = 10;
++                effect.u.periodic.magnitude = 0x6000;
++                effect.u.periodic.offset = 0;
++                effect.u.periodic.phase = 0;
++                effect.u.periodic.custom_data = NULL;
++                effect.u.periodic.custom_len = 0;
++            } else {
++                LOGINFO("dali-evff: %s has no rumble/periodic bits\n", path.c_str());
++                close(fd);
++                continue;
++            }
++
++            if (ioctl(fd, EVIOCSFF, &effect) == 0 && effect.id >= 0) {
++                struct input_event play;
++                memset(&play, 0, sizeof(play));
++                play.type = EV_FF;
++                play.code = effect.id;
++                play.value = 1;
++                if (write(fd, &play, sizeof(play)) == (ssize_t)sizeof(play)) {
++                    result = 0;
++                    LOGINFO("dali-evff: played effect %d on %s\n", effect.id, path.c_str());
++                    // Let the CS40L26 run the full burst, then stop and free
++                    // the effect. Without the erase, the next upload races with
++                    // the still-registered effect and the driver stops the new
++                    // play instantly (log says played, motor never actuates).
++                    int eff_ms = timeout_ms < 60 ? 60 : timeout_ms;
++                    usleep(eff_ms * 1000 + 20000);
++                    struct input_event stop_ev;
++                    memset(&stop_ev, 0, sizeof(stop_ev));
++                    stop_ev.type = EV_FF;
++                    stop_ev.code = effect.id;
++                    stop_ev.value = 0;
++                    write(fd, &stop_ev, sizeof(stop_ev));
++                    ioctl(fd, EVIOCRMFF, effect.id);
++                } else {
++                    LOGINFO("dali-evff: EV_FF write failed on %s errno=%d\n", path.c_str(), errno);
++                }
++            } else {
++                LOGINFO("dali-evff: EVIOCSFF failed on %s errno=%d\n", path.c_str(), errno);
++            }
++        } else {
++            LOGINFO("dali-evff: %s EVIOCGBIT failed errno=%d\n", path.c_str(), errno);
++        }
++        close(fd);
++        if (result == 0)
++            break;
++    }
++    closedir(dir);
++    if (result != 0)
++        LOGINFO("dali-evff: no usable force-feedback device\n");
++    return result;
++}
++
+ int vibrate(int timeout_ms)
+ {
+     if (timeout_ms > 10000) timeout_ms = 1000;
+     char tout[6];
+     sprintf(tout, "%i", timeout_ms);
+ 
++    /* Dali exposes haptics only through the CS40L26 force-feedback input
++     * device; try EV_FF before the legacy sysfs backends. */
++    if (vibrate_force_feedback(timeout_ms) == 0)
++        return 0;
++
+ #ifdef USE_QTI_HAPTICS
+     android::sp<android::hardware::vibrator::V1_2::IVibrator> vib = android::hardware::vibrator::V1_2::IVibrator::getService();
+     if (vib != nullptr) {

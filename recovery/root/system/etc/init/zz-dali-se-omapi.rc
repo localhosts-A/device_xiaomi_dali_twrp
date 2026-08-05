@@ -1,0 +1,14 @@
+# Delay the upstream recovery-domain OMAPI service until the eSE HAL is ready.
+service se_omapi /system/bin/se_omapi
+    override
+    class hal
+    user root
+    group root
+    interface aidl android.se.omapi.ISecureElementService/default
+    seclabel u:r:recovery:s0
+    disabled
+
+# This file sorts after the generated se_omapi.rc. Keep OMAPI stopped until
+# dali_vendor_runtime has mounted ODM and started the Xiaomi eSE service.
+on late-init
+    stop se_omapi

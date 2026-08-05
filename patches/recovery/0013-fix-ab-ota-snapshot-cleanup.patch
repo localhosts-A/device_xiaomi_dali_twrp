@@ -1,0 +1,86 @@
+diff --git a/twrpinstall/twinstall.cpp b/twrpinstall/twinstall.cpp
+index 73fe339..8e1a0d9 100644
+--- a/twrpinstall/twinstall.cpp
++++ b/twrpinstall/twinstall.cpp
+@@ -81,6 +81,34 @@ bool IsLkProtectionSupported() {
+ 	return strcmp(device, kLkProtectionDevice) == 0;
+ }
+ 
++bool UmountForAbOta(const char* path) {
++	if (umount2(path, 0) == 0) {
++		LOGINFO("Unmounted '%s' for A/B OTA snapshot handling.\n", path);
++		return true;
++	}
++	if (errno == EINVAL || errno == ENOENT) {
++		return true; // not mounted
++	}
++	LOGERR("Unable to unmount '%s' for A/B OTA snapshot handling: %s\n", path, strerror(errno));
++	return false;
++}
++
++void DeleteDmDevice(const char* name) {
++    const char* const argv[] = {"/system/bin/dmctl", "delete", name, nullptr};
++    const pid_t pid = fork();
++    if (pid == 0) {
++        execv(argv[0], const_cast<char**>(argv));
++        _exit(127);
++    }
++    if (pid > 0) {
++        int status = 0;
++        waitpid(pid, &status, 0);
++        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
++            LOGINFO("Removed stale A/B snapshot device '%s'.\n", name);
++        }
++    }
++}
++
+ } // namespace
+ 
+ enum zip_type {
+@@ -486,6 +514,46 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+ 
+ 			TWFunc::IsRecoveryOverwritten(true);
+ 
++			// Free current-slot super mounts so an interrupted Virtual A/B
++			// transaction can be cancelled, and expose /metadata for snapshot
++			// state. update_engine_sideload recreates everything it needs.
++			LOGINFO("Preparing A/B OTA snapshot handling: unmounting Recovery super mounts.\n");
++			const std::string ab_system_root = PartitionManager.Get_Android_Root_Path();
++			UmountForAbOta(ab_system_root.c_str());
++			UmountForAbOta("/vendor/lib/modules");
++			UmountForAbOta("/vendor");
++			UmountForAbOta("/odm/lib/modules");
++			UmountForAbOta("/odm");
++			UmountForAbOta("/product");
++			UmountForAbOta("/system_ext");
++			UmountForAbOta("/vendor_dlkm");
++			UmountForAbOta("/odm_dlkm");
++			UmountForAbOta("/system_dlkm");
++
++			LOGINFO("Clearing stale A/B snapshot devices.\n");
++			const char* const kAbSnapshotPartitions[] = {
++				"system", "vendor", "odm", "product", "system_ext",
++				"system_dlkm", "vendor_dlkm", "odm_dlkm", "mi_ext",
++			};
++			char ab_device_name[128];
++			for (const char* partition : kAbSnapshotPartitions) {
++				snprintf(ab_device_name, sizeof(ab_device_name), "%s_a", partition);
++				DeleteDmDevice(ab_device_name);
++				snprintf(ab_device_name, sizeof(ab_device_name), "%s_a-cow", partition);
++				DeleteDmDevice(ab_device_name);
++				snprintf(ab_device_name, sizeof(ab_device_name), "%s_a-base", partition);
++				DeleteDmDevice(ab_device_name);
++				snprintf(ab_device_name, sizeof(ab_device_name), "%s_a-src", partition);
++				DeleteDmDevice(ab_device_name);
++				snprintf(ab_device_name, sizeof(ab_device_name), "%s_a-cow-img", partition);
++				DeleteDmDevice(ab_device_name);
++			}
++
++			if (PartitionManager.Mount_By_Path("/metadata", false)) {
++				LOGINFO("Mounted /metadata for A/B OTA snapshot handling.\n");
++			} else {
++				LOGERR("Unable to mount /metadata for A/B OTA snapshot handling.\n");
++			}
+ 			ret_val = Run_Update_Binary(path, wipe_cache, AB_OTA_ZIP_TYPE);
+ 
+ 			DataManager::SetValue(FOX_ZIP_INSTALLER_CODE, 1); // mark as custom ROM install

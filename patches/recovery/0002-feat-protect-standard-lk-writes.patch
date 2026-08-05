@@ -1,0 +1,751 @@
+diff --git a/Android.mk b/Android.mk
+index e67fcb5..0eafd33 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -672,6 +672,20 @@ LOCAL_POST_INSTALL_CMD += \
+ 
+ include $(BUILD_EXECUTABLE)
+ 
++# Dali invokes this C helper only through the LK-protection updater path.
++# Device trees opt in through TARGET_RECOVERY_DEVICE_MODULES.
++include $(CLEAR_VARS)
++LOCAL_MODULE := of_lk_protection_exec
++LOCAL_MODULE_STEM := of-lk-protection-exec
++LOCAL_MODULE_TAGS := optional
++LOCAL_MODULE_CLASS := RECOVERY_EXECUTABLES
++LOCAL_MODULE_PATH := $(TARGET_RECOVERY_ROOT_OUT)/system/bin
++LOCAL_SRC_FILES := lk_protection_exec.c
++LOCAL_CFLAGS := -Wall -Werror -D_FILE_OFFSET_BITS=64
++LOCAL_CXX_STL := none
++LOCAL_SHARED_LIBRARIES := libc
++include $(BUILD_EXECUTABLE)
++
+ # Symlink for file_contexts
+ include $(CLEAR_VARS)
+ 
+diff --git a/data.cpp b/data.cpp
+index 7ca8d86..6dd4a54 100644
+--- a/data.cpp
++++ b/data.cpp
+@@ -1239,6 +1239,7 @@ void DataManager::SetDefaultValues()
+   // the canonical current device
+   str = TWFunc::Fox_Property_Get("ro.product.device");
+   mConst.SetValue("fox_product_device", str);
++  mConst.SetValue("of_lk_protection_supported", str == "dali" ? "1" : "0");
+ 
+   // let the device name in the "About" menu show the canonical value, rather than the one determined at build time
+   mData.SetValue(FOX_COMPATIBILITY_DEVICE, str.c_str());
+@@ -1262,6 +1263,8 @@ void DataManager::SetDefaultValues()
+   mPersist.SetValue(TW_TIME_ZONE_GUIOFFSET, "0");
+   mPersist.SetValue(TW_TIME_ZONE_GUIDST, "1");
+   mPersist.SetValue(TW_AUTO_REFLASHTWRP_VAR, "1");
++  if (str == "dali")
++    mPersist.SetValue(TW_LK_PROTECT_VAR, "1");
+ 
+   // avb2.0 disable
+   // by patching boot image
+diff --git a/gui/theme/common/languages/en.xml b/gui/theme/common/languages/en.xml
+index b8a3ba3..a92ac47 100644
+--- a/gui/theme/common/languages/en.xml
++++ b/gui/theme/common/languages/en.xml
+@@ -1241,6 +1241,7 @@
+ 		<string name="unmap_super_devices_complete">Unmapped all Super Devices</string>
+ 
+ 		<string name="auto_reflashtwrp_chk">Reflash OrangeFox after flashing a ROM</string>
++		<string name="lk_protect_chk">Protect LK partition (OTA compatibility warning)</string>
+ 		<string name="modified_ramdisk_error">ramdisk files have been modified, unable to create ramdisk to flash. fastboot boot OrangeFox and try this option again or go back to Files and install img file as Recovery Ramdisk using Install Ramdisk button.</string>
+ 		<string name="create_ramdisk_error">failed to create ramdisk to flash.</string>
+ 		<string name="reflash_twrp">Flash current OrangeFox</string>
+diff --git a/gui/theme/extra-languages/languages/zh_CN.xml b/gui/theme/extra-languages/languages/zh_CN.xml
+index 87c5ea8..590af1c 100644
+--- a/gui/theme/extra-languages/languages/zh_CN.xml
++++ b/gui/theme/extra-languages/languages/zh_CN.xml
+@@ -1166,6 +1166,7 @@
+         <string name="unmapping_super_devices">正在取消映射Super设备...</string>
+         <string name="unmap_super_devices_complete">已取消映射所有Super设备</string>
+         <string name="auto_reflashtwrp_chk">刷入ROM后重新刷入OrangeFox</string>
++        <string name="lk_protect_chk">保护LK分区（含LK的OTA可能不兼容）</string>
+         <string name="modified_ramdisk_error">ramdisk文件已被修改，无法创建ramdisk以进行刷入。 fastboot引导OrangeFox并再次尝试此选项，或返回文件并使用“安装Ramdisk”按钮将img文件安装为恢复Ramdisk。</string>
+         <string name="create_ramdisk_error">无法创建ramdisk以进行刷入。</string>
+         <string name="reflash_twrp">刷入当前OrangeFox</string>
+diff --git a/gui/theme/portrait_hdpi/pages/advanced.xml b/gui/theme/portrait_hdpi/pages/advanced.xml
+index 936a887..24a3f97 100644
+--- a/gui/theme/portrait_hdpi/pages/advanced.xml
++++ b/gui/theme/portrait_hdpi/pages/advanced.xml
+@@ -913,6 +913,10 @@
+ 					<condition var1="fox_disable_reflash_current" op="!=" var2="1"/>
+ 					<data variable="tw_auto_reflashtwrp"/>
+ 				</listitem>
++				<listitem name="{@lk_protect_chk}">
++					<condition var1="of_lk_protection_supported" var2="1"/>
++					<data variable="tw_lk_protect"/>
++				</listitem>
+ 				<listitem name="{@auto_disable_avb2=Disable vbmeta AVB2.0}">
+ 					<condition var1="fox_auto_disable_vbmeta_avb2" var2="1"/>
+ 					<data variable="tw_auto_disable_avb2"/>
+diff --git a/gui/theme/portrait_hdpi/pages/install.xml b/gui/theme/portrait_hdpi/pages/install.xml
+index ea88792..b85afa8 100644
+--- a/gui/theme/portrait_hdpi/pages/install.xml
++++ b/gui/theme/portrait_hdpi/pages/install.xml
+@@ -61,6 +61,10 @@
+ 					<condition var1="fox_disable_reflash_current" op="!=" var2="1"/>
+ 					<data variable="tw_auto_reflashtwrp"/>
+ 				</listitem>
++				<listitem name="{@lk_protect_chk}">
++					<condition var1="of_lk_protection_supported" var2="1"/>
++					<data variable="tw_lk_protect"/>
++				</listitem>
+ 				<listitem name="{@unmount_sys_install}">
+ 					<data variable="tw_unmount_system"/>
+ 				</listitem>
+@@ -232,6 +236,10 @@
+ 					<condition var1="fox_disable_reflash_current" op="!=" var2="1"/>
+ 					<data variable="tw_auto_reflashtwrp"/>
+ 				</listitem>
++				<listitem name="{@lk_protect_chk}">
++					<condition var1="of_lk_protection_supported" var2="1"/>
++					<data variable="tw_lk_protect"/>
++				</listitem>
+ 				<listitem name="{@unmount_sys_install}">
+ 					<data variable="tw_unmount_system"/>
+ 				</listitem>
+diff --git a/lk_protection_exec.c b/lk_protection_exec.c
+new file mode 100644
+index 0000000..ea59724
+--- /dev/null
++++ b/lk_protection_exec.c
+@@ -0,0 +1,565 @@
++/*
++ * Temporary LK target wrapper for Dali Recovery updaters.
++ *
++ * It runs only after Recovery has execve()'d this helper, so the mount
++ * namespace and loop setup do not occur in Recovery's multi-threaded fork
++ * child. The real updater remains a child of this single-threaded process.
++ */
++
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++
++#include <dirent.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <linux/fs.h>
++#include <linux/loop.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <sched.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/mount.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++extern char** environ;
++
++#define LK_ROOT_BY_NAME "/dev/block/by-name"
++#define LK_PLATFORM_BY_NAME "/dev/block/platform/soc/16810000.ufshci/by-name"
++#define LK_A_NAME "lk_a"
++#define LK_B_NAME "lk_b"
++#define LK_A_RAW_DEVICE "/dev/block/sdc36"
++#define LK_B_RAW_DEVICE "/dev/block/sdc70"
++#define COPY_BUFFER_SIZE (64 * 1024)
++
++struct loop_target {
++    int fd;
++    char backing_path[PATH_MAX];
++    char device_path[PATH_MAX];
++};
++
++struct lk_context {
++    char temporary_root[PATH_MAX];
++    char root_shadow[PATH_MAX];
++    char platform_shadow[PATH_MAX];
++    char raw_lk_a[PATH_MAX];
++    char raw_lk_b[PATH_MAX];
++    bool root_shadow_mounted;
++    bool platform_shadow_mounted;
++    bool raw_lk_a_mounted;
++    bool raw_lk_b_mounted;
++    struct loop_target lk_a;
++    struct loop_target lk_b;
++};
++
++static void ReportErrno(const char* action) {
++    const int saved_errno = errno;
++    dprintf(STDERR_FILENO, "E: LK protection: %s: %s\n", action, strerror(saved_errno));
++}
++
++static void ReportMessage(const char* message) {
++    dprintf(STDERR_FILENO, "E: LK protection: %s\n", message);
++}
++
++static bool BuildPath(char* output, size_t output_size, const char* first, const char* second) {
++    const int length = snprintf(output, output_size, "%s/%s", first, second);
++    return length >= 0 && (size_t)length < output_size;
++}
++
++static bool ReadFully(int fd, void* buffer, size_t size) {
++    uint8_t* cursor = buffer;
++    size_t done = 0;
++    while (done < size) {
++        const ssize_t amount = read(fd, cursor + done, size - done);
++        if (amount < 0) {
++            if (errno == EINTR) {
++                continue;
++            }
++            return false;
++        }
++        if (amount == 0) {
++            errno = EIO;
++            return false;
++        }
++        done += (size_t)amount;
++    }
++    return true;
++}
++
++static bool WriteFully(int fd, const void* buffer, size_t size) {
++    const uint8_t* cursor = buffer;
++    size_t done = 0;
++    while (done < size) {
++        const ssize_t amount = write(fd, cursor + done, size - done);
++        if (amount < 0) {
++            if (errno == EINTR) {
++                continue;
++            }
++            return false;
++        }
++        if (amount == 0) {
++            errno = EIO;
++            return false;
++        }
++        done += (size_t)amount;
++    }
++    return true;
++}
++
++static bool CopyBlockDevice(const char* source, const char* destination, uint64_t* size) {
++    int source_fd = -1;
++    int destination_fd = -1;
++    bool result = false;
++    uint64_t block_size = 0;
++    uint8_t buffer[COPY_BUFFER_SIZE];
++
++    source_fd = open(source, O_RDONLY | O_CLOEXEC);
++    if (source_fd < 0) {
++        ReportErrno("could not open an LK source block device");
++        goto done;
++    }
++    if (ioctl(source_fd, BLKGETSIZE64, &block_size) != 0 || block_size == 0) {
++        ReportErrno("could not read an LK source block-device size");
++        goto done;
++    }
++
++    destination_fd = open(destination, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
++    if (destination_fd < 0) {
++        ReportErrno("could not create an LK temporary backing file");
++        goto done;
++    }
++    uint64_t copied = 0;
++    while (copied < block_size) {
++        const uint64_t remaining = block_size - copied;
++        const size_t chunk = remaining < sizeof(buffer) ? (size_t)remaining : sizeof(buffer);
++        if (!ReadFully(source_fd, buffer, chunk) || !WriteFully(destination_fd, buffer, chunk)) {
++            ReportErrno("could not copy an LK source block device");
++            goto done;
++        }
++        copied += chunk;
++    }
++    if (fsync(destination_fd) != 0) {
++        ReportErrno("could not synchronize an LK temporary backing file");
++        goto done;
++    }
++    *size = block_size;
++    result = true;
++
++done:
++    if (destination_fd >= 0) {
++        close(destination_fd);
++    }
++    if (source_fd >= 0) {
++        close(source_fd);
++    }
++    if (!result) {
++        unlink(destination);
++    }
++    return result;
++}
++
++static void DetachLoop(struct loop_target* target) {
++    if (target->fd >= 0) {
++        if (ioctl(target->fd, LOOP_CLR_FD, 0) != 0 && errno != ENXIO) {
++            ReportErrno("could not detach an LK temporary loop device");
++        }
++        close(target->fd);
++        target->fd = -1;
++    }
++    if (target->backing_path[0] != '\0') {
++        unlink(target->backing_path);
++        target->backing_path[0] = '\0';
++    }
++}
++
++static bool AttachLoop(const char* backing_path, struct loop_target* target) {
++    int control_fd = -1;
++    int backing_fd = -1;
++    int loop_fd = -1;
++    bool result = false;
++
++    control_fd = open("/dev/loop-control", O_RDWR | O_CLOEXEC);
++    if (control_fd < 0) {
++        ReportErrno("could not open loop control");
++        goto done;
++    }
++    const int number = ioctl(control_fd, LOOP_CTL_GET_FREE);
++    if (number < 0) {
++        ReportErrno("could not allocate a loop device");
++        goto done;
++    }
++    const int device_length = snprintf(target->device_path, sizeof(target->device_path), "/dev/block/loop%d", number);
++    if (device_length < 0 || (size_t)device_length >= sizeof(target->device_path)) {
++        ReportMessage("could not construct a loop device path");
++        goto done;
++    }
++
++    backing_fd = open(backing_path, O_RDWR | O_CLOEXEC);
++    loop_fd = open(target->device_path, O_RDWR | O_CLOEXEC);
++    if (backing_fd < 0 || loop_fd < 0) {
++        ReportErrno("could not open an LK temporary loop target");
++        goto done;
++    }
++    if (ioctl(loop_fd, LOOP_SET_FD, backing_fd) != 0) {
++        ReportErrno("could not attach an LK temporary loop target");
++        goto done;
++    }
++
++    struct loop_info64 info;
++    memset(&info, 0, sizeof(info));
++    info.lo_flags = LO_FLAGS_AUTOCLEAR;
++    if (ioctl(loop_fd, LOOP_SET_STATUS64, &info) != 0) {
++        ReportErrno("could not enable LK loop autoclear");
++        goto done;
++    }
++    target->fd = loop_fd;
++    loop_fd = -1;
++    result = true;
++
++done:
++    if (loop_fd >= 0) {
++        ioctl(loop_fd, LOOP_CLR_FD, 0);
++        close(loop_fd);
++    }
++    if (backing_fd >= 0) {
++        close(backing_fd);
++    }
++    if (control_fd >= 0) {
++        close(control_fd);
++    }
++    return result;
++}
++
++static void RemoveShadowDirectory(const char* path) {
++    DIR* directory = opendir(path);
++    if (directory != NULL) {
++        for (;;) {
++            errno = 0;
++            struct dirent* entry = readdir(directory);
++            if (entry == NULL) {
++                break;
++            }
++            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
++                continue;
++            }
++            char entry_path[PATH_MAX];
++            if (BuildPath(entry_path, sizeof(entry_path), path, entry->d_name)) {
++                unlink(entry_path);
++            }
++        }
++        closedir(directory);
++    }
++    rmdir(path);
++}
++
++static bool CloneByNameDirectory(const char* source, const char* destination) {
++    struct stat source_status;
++    if (stat(source, &source_status) != 0) {
++        ReportErrno("could not inspect an LK by-name directory");
++        return false;
++    }
++    if (!S_ISDIR(source_status.st_mode)) {
++        ReportMessage("an LK by-name path is not a directory");
++        return false;
++    }
++    if (mkdir(destination, source_status.st_mode & 0777) != 0) {
++        ReportErrno("could not create an LK shadow directory");
++        return false;
++    }
++
++    DIR* directory = opendir(source);
++    if (directory == NULL) {
++        ReportErrno("could not open an LK by-name directory");
++        RemoveShadowDirectory(destination);
++        return false;
++    }
++
++    bool result = true;
++    for (;;) {
++        errno = 0;
++        struct dirent* entry = readdir(directory);
++        if (entry == NULL) {
++            if (errno != 0) {
++                ReportErrno("could not read an LK by-name directory");
++                result = false;
++            }
++            break;
++        }
++        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
++            continue;
++        }
++
++        char source_path[PATH_MAX];
++        char destination_path[PATH_MAX];
++        char link_target[PATH_MAX];
++        struct stat status;
++        if (!BuildPath(source_path, sizeof(source_path), source, entry->d_name) ||
++            !BuildPath(destination_path, sizeof(destination_path), destination, entry->d_name) ||
++            lstat(source_path, &status) != 0) {
++            ReportErrno("could not inspect an entry in an LK by-name directory");
++            result = false;
++            break;
++        }
++        if (!S_ISLNK(status.st_mode)) {
++            ReportMessage("found an unsupported entry in an LK by-name directory");
++            result = false;
++            break;
++        }
++        const ssize_t length = readlink(source_path, link_target, sizeof(link_target) - 1);
++        if (length < 0 || (size_t)length >= sizeof(link_target) - 1) {
++            ReportErrno("could not read an LK by-name link");
++            result = false;
++            break;
++        }
++        link_target[length] = '\0';
++        if (symlink(link_target, destination_path) != 0) {
++            ReportErrno("could not clone an LK by-name link");
++            result = false;
++            break;
++        }
++    }
++    closedir(directory);
++    if (!result) {
++        RemoveShadowDirectory(destination);
++    }
++    return result;
++}
++
++static bool RedirectLkAliases(const char* directory, const char* lk_a, const char* lk_b) {
++    static const char* const aliases[] = {
++        "lk", "lk_a", "lk_b", "lk1", "lk1_a", "lk1_b", "lk2", "lk2_a", "lk2_b",
++    };
++    bool have_lk_a = false;
++    bool have_lk_b = false;
++
++    for (size_t index = 0; index < sizeof(aliases) / sizeof(aliases[0]); ++index) {
++        const char* alias = aliases[index];
++        char path[PATH_MAX];
++        struct stat status;
++        if (!BuildPath(path, sizeof(path), directory, alias)) {
++            ReportMessage("could not construct an LK alias path");
++            return false;
++        }
++        if (lstat(path, &status) != 0) {
++            if (errno == ENOENT) {
++                continue;
++            }
++            ReportErrno("could not inspect an LK alias");
++            return false;
++        }
++        if (!S_ISLNK(status.st_mode)) {
++            ReportMessage("an LK alias is not a symbolic link");
++            return false;
++        }
++
++        const size_t length = strlen(alias);
++        const bool is_b_slot = length >= 2 && alias[length - 2] == '_' && alias[length - 1] == 'b';
++        if (unlink(path) != 0 || symlink(is_b_slot ? lk_b : lk_a, path) != 0) {
++            ReportErrno("could not redirect an LK alias");
++            return false;
++        }
++        if (strcmp(alias, LK_A_NAME) == 0) {
++            have_lk_a = true;
++        } else if (strcmp(alias, LK_B_NAME) == 0) {
++            have_lk_b = true;
++        }
++    }
++    if (!have_lk_a || !have_lk_b) {
++        ReportMessage("an LK by-name directory is missing lk_a or lk_b");
++        return false;
++    }
++    return true;
++}
++
++static bool ResolveBlockTarget(const char* alias, char* target) {
++    char* resolved = realpath(alias, target);
++    if (resolved == NULL) {
++        ReportErrno("could not resolve an LK block-device path");
++        return false;
++    }
++    if (strncmp(target, "/dev/block/", strlen("/dev/block/")) != 0) {
++        ReportMessage("an LK block-device path is outside /dev/block");
++        return false;
++    }
++    struct stat status;
++    if (stat(target, &status) != 0 || !S_ISBLK(status.st_mode)) {
++        ReportErrno("an LK resolved path is not a block device");
++        return false;
++    }
++    return true;
++}
++
++static void CleanupContext(struct lk_context* context) {
++    if (context->raw_lk_b_mounted) {
++        if (umount2(context->raw_lk_b, MNT_DETACH) != 0 && errno != EINVAL) {
++            ReportErrno("could not detach the resolved LK B block-device shadow");
++        }
++        context->raw_lk_b_mounted = false;
++    }
++    if (context->raw_lk_a_mounted) {
++        if (umount2(context->raw_lk_a, MNT_DETACH) != 0 && errno != EINVAL) {
++            ReportErrno("could not detach the resolved LK A block-device shadow");
++        }
++        context->raw_lk_a_mounted = false;
++    }
++    if (context->platform_shadow_mounted) {
++        if (umount2(LK_PLATFORM_BY_NAME, MNT_DETACH) != 0 && errno != EINVAL) {
++            ReportErrno("could not detach the platform LK by-name shadow");
++        }
++        context->platform_shadow_mounted = false;
++    }
++    if (context->root_shadow_mounted) {
++        if (umount2(LK_ROOT_BY_NAME, MNT_DETACH) != 0 && errno != EINVAL) {
++            ReportErrno("could not detach the root LK by-name shadow");
++        }
++        context->root_shadow_mounted = false;
++    }
++    DetachLoop(&context->lk_b);
++    DetachLoop(&context->lk_a);
++    if (context->platform_shadow[0] != '\0') {
++        RemoveShadowDirectory(context->platform_shadow);
++    }
++    if (context->root_shadow[0] != '\0') {
++        RemoveShadowDirectory(context->root_shadow);
++    }
++    if (context->temporary_root[0] != '\0') {
++        rmdir(context->temporary_root);
++    }
++}
++
++static bool SetupContext(struct lk_context* context) {
++    char template[] = "/tmp/of-lk-protection.XXXXXX";
++    char lk_a_source[PATH_MAX];
++    char lk_b_source[PATH_MAX];
++    uint64_t lk_a_size = 0;
++    uint64_t lk_b_size = 0;
++
++    if (unshare(CLONE_NEWNS) != 0) {
++        ReportErrno("could not create an updater mount namespace");
++        goto fail;
++    }
++    if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) {
++        ReportErrno("could not isolate updater mount propagation");
++        goto fail;
++    }
++    if (mkdtemp(template) == NULL) {
++        ReportErrno("could not create an LK temporary directory");
++        goto fail;
++    }
++    const int temporary_root_length = snprintf(context->temporary_root, sizeof(context->temporary_root), "%s", template);
++    if (temporary_root_length < 0 || (size_t)temporary_root_length >= sizeof(context->temporary_root)) {
++        ReportMessage("could not retain an LK temporary directory path");
++        goto fail;
++    }
++    if (!BuildPath(lk_a_source, sizeof(lk_a_source), LK_ROOT_BY_NAME, LK_A_NAME) ||
++        !BuildPath(lk_b_source, sizeof(lk_b_source), LK_ROOT_BY_NAME, LK_B_NAME) ||
++        !ResolveBlockTarget(lk_a_source, context->raw_lk_a) ||
++        !ResolveBlockTarget(lk_b_source, context->raw_lk_b) ||
++        strcmp(context->raw_lk_a, LK_A_RAW_DEVICE) != 0 ||
++        strcmp(context->raw_lk_b, LK_B_RAW_DEVICE) != 0) {
++        ReportMessage("could not validate Dali LK block-device paths");
++        goto fail;
++    }
++    if (!BuildPath(context->lk_a.backing_path, sizeof(context->lk_a.backing_path), context->temporary_root, "lk_a.img") ||
++        !BuildPath(context->lk_b.backing_path, sizeof(context->lk_b.backing_path), context->temporary_root, "lk_b.img") ||
++        !CopyBlockDevice(context->raw_lk_a, context->lk_a.backing_path, &lk_a_size) ||
++        !CopyBlockDevice(context->raw_lk_b, context->lk_b.backing_path, &lk_b_size) ||
++        lk_a_size != lk_b_size) {
++        ReportMessage("could not create matched LK temporary backing images");
++        goto fail;
++    }
++    if (!AttachLoop(context->lk_a.backing_path, &context->lk_a) || !AttachLoop(context->lk_b.backing_path, &context->lk_b)) {
++        goto fail;
++    }
++    if (unlink(context->lk_a.backing_path) != 0 || unlink(context->lk_b.backing_path) != 0) {
++        ReportErrno("could not unlink an LK temporary backing image");
++        goto fail;
++    }
++    context->lk_a.backing_path[0] = '\0';
++    context->lk_b.backing_path[0] = '\0';
++
++    if (!BuildPath(context->root_shadow, sizeof(context->root_shadow), context->temporary_root, "by-name") ||
++        !BuildPath(context->platform_shadow, sizeof(context->platform_shadow), context->temporary_root, "platform-by-name") ||
++        !CloneByNameDirectory(LK_ROOT_BY_NAME, context->root_shadow) ||
++        !RedirectLkAliases(context->root_shadow, context->lk_a.device_path, context->lk_b.device_path) ||
++        !CloneByNameDirectory(LK_PLATFORM_BY_NAME, context->platform_shadow) ||
++        !RedirectLkAliases(context->platform_shadow, context->lk_a.device_path, context->lk_b.device_path)) {
++        goto fail;
++    }
++    if (mount(context->root_shadow, LK_ROOT_BY_NAME, NULL, MS_BIND, NULL) != 0) {
++        ReportErrno("could not shadow the root LK by-name directory");
++        goto fail;
++    }
++    context->root_shadow_mounted = true;
++    if (mount(context->platform_shadow, LK_PLATFORM_BY_NAME, NULL, MS_BIND, NULL) != 0) {
++        ReportErrno("could not shadow the platform LK by-name directory");
++        goto fail;
++    }
++    context->platform_shadow_mounted = true;
++    if (mount(context->lk_a.device_path, context->raw_lk_a, NULL, MS_BIND, NULL) != 0) {
++        ReportErrno("could not shadow the resolved LK A block device");
++        goto fail;
++    }
++    context->raw_lk_a_mounted = true;
++    if (mount(context->lk_b.device_path, context->raw_lk_b, NULL, MS_BIND, NULL) != 0) {
++        ReportErrno("could not shadow the resolved LK B block device");
++        goto fail;
++    }
++    context->raw_lk_b_mounted = true;
++    return true;
++
++fail:
++    CleanupContext(context);
++    return false;
++}
++
++int main(int argc, char* argv[]) {
++    if (argc < 3 || strcmp(argv[1], "--") != 0) {
++        ReportMessage("expected -- followed by an updater command");
++        return 2;
++    }
++
++    struct lk_context context;
++    memset(&context, 0, sizeof(context));
++    context.lk_a.fd = -1;
++    context.lk_b.fd = -1;
++    if (!SetupContext(&context)) {
++        return 1;
++    }
++
++    const pid_t updater_pid = fork();
++    if (updater_pid < 0) {
++        ReportErrno("could not start the protected updater");
++        CleanupContext(&context);
++        return 1;
++    }
++    if (updater_pid == 0) {
++        execve(argv[2], &argv[2], environ);
++        ReportErrno("could not execute the protected updater");
++        _exit(127);
++    }
++
++    int status = 0;
++    while (waitpid(updater_pid, &status, 0) < 0) {
++        if (errno != EINTR) {
++            ReportErrno("could not wait for the protected updater");
++            CleanupContext(&context);
++            return 1;
++        }
++    }
++    CleanupContext(&context);
++    if (WIFEXITED(status)) {
++        return WEXITSTATUS(status);
++    }
++    if (WIFSIGNALED(status)) {
++        return 128 + WTERMSIG(status);
++    }
++    return 1;
++}
+diff --git a/twrpinstall/twinstall.cpp b/twrpinstall/twinstall.cpp
+index e621ca1..abbae03 100644
+--- a/twrpinstall/twinstall.cpp
++++ b/twrpinstall/twinstall.cpp
+@@ -70,6 +70,19 @@ extern "C" {
+ 
+ #define AB_OTA "payload_properties.txt"
+ 
++namespace {
++
++constexpr char kLkProtectionDevice[] = "dali";
++constexpr char kLkProtectionExec[] = "/system/bin/of-lk-protection-exec";
++
++bool IsLkProtectionSupported() {
++	char device[PROPERTY_VALUE_MAX];
++	property_get("ro.product.device", device, "");
++	return strcmp(device, kLkProtectionDevice) == 0;
++}
++
++} // namespace
++
+ enum zip_type {
+ 	UNKNOWN_ZIP_TYPE = 0,
+ 	UPDATE_BINARY_ZIP_TYPE,
+@@ -189,11 +202,27 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
+         return ret_val;
+     }
+ 
+-	// Convert the vector to a NULL-terminated char* array suitable for execv.
+-	const char* chr_args[args.size() + 1];
+-	chr_args[args.size()] = NULL;
+-	for (size_t i = 0; i < args.size(); i++)
+-		chr_args[i] = args[i].c_str();
++	const bool protect_lk = DataManager::GetIntValue(TW_LK_PROTECT_VAR) != 0 && IsLkProtectionSupported();
++	std::vector<std::string> exec_args;
++	if (protect_lk) {
++		gui_print("LK protection is enabled. Standard LK writes are redirected to temporary storage.\n");
++		if (ztype == AB_OTA_ZIP_TYPE) {
++			gui_print("An OTA that requires a newer LK may not boot after installation.\n");
++		}
++		LOGINFO("LK protection is enabled for updater '%s'; aliases and resolved LK block nodes are virtualized.\n", args[0].c_str());
++		exec_args.reserve(args.size() + 2);
++		exec_args.emplace_back(kLkProtectionExec);
++		exec_args.emplace_back("--");
++		exec_args.insert(exec_args.end(), args.begin(), args.end());
++	} else {
++		exec_args = args;
++	}
++
++	// Convert the selected command to a NULL-terminated char* array for execve.
++	const char* chr_args[exec_args.size() + 1];
++	chr_args[exec_args.size()] = NULL;
++	for (size_t i = 0; i < exec_args.size(); i++)
++		chr_args[i] = exec_args[i].c_str();
+ 
+ 	pid_t pid = fork();
+ 	if (pid == 0) {
+diff --git a/variables.h b/variables.h
+index 75f6768..821f353 100644
+--- a/variables.h
++++ b/variables.h
+@@ -339,6 +339,7 @@ static int Fox_Current_ROM_IsMIUI = 0; // is the currently installed ROM a MIUI
+ #define TW_IS_SUPER             "tw_is_super"
+ #define TW_VIRTUAL_AB_ENABLED   "tw_virtual_ab.enabled"
+ #define TW_AUTO_REFLASHTWRP_VAR "tw_auto_reflashtwrp"
++#define TW_LK_PROTECT_VAR       "tw_lk_protect"
+ 
+ // BUILD PROPS
+ #define TW_FASTBOOT_MODE_PROP         "ro.twrp.fastbootd"

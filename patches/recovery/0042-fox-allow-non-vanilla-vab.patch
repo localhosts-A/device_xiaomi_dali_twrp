@@ -1,0 +1,10 @@
+--- a/orangefox.mk
++++ b/orangefox.mk
+@@ -93,3 +93,5 @@
+     FOX_AB_DEVICE := 1
+-    FOX_VANILLA_BUILD := 1
++    ifeq ($(FOX_VANILLA_BUILD),)
++        FOX_VANILLA_BUILD := 1
++    endif
+ endif
+

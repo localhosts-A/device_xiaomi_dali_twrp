@@ -1,0 +1,36 @@
+--- a/gui/theme/portrait_hdpi/pages/advanced.xml
++++ b/gui/theme/portrait_hdpi/pages/advanced.xml
+@@ -916,5 +916,8 @@
+ 				<listitem name="{@lk_protect_chk}">
+ 					<condition var1="of_lk_protection_supported" var2="1"/>
+ 					<data variable="tw_lk_protect"/>
+ 				</listitem>
++				<listitem name="{@spl_downgrade_chk}">
++					<data variable="tw_allow_spl_downgrade"/>
++				</listitem>
+ 				<listitem name="{@auto_disable_avb2=Disable vbmeta AVB2.0}">
+--- a/gui/theme/portrait_hdpi/pages/install.xml
++++ b/gui/theme/portrait_hdpi/pages/install.xml
+@@ -64,5 +64,8 @@
+ 				<listitem name="{@lk_protect_chk}">
+ 					<condition var1="of_lk_protection_supported" var2="1"/>
+ 					<data variable="tw_lk_protect"/>
+ 				</listitem>
++				<listitem name="{@spl_downgrade_chk}">
++					<data variable="tw_allow_spl_downgrade"/>
++				</listitem>
+ 				<listitem name="{@unmount_sys_install}">
+@@ -242,5 +245,8 @@
+ 				<listitem name="{@lk_protect_chk}">
+ 					<condition var1="of_lk_protection_supported" var2="1"/>
+ 					<data variable="tw_lk_protect"/>
+ 				</listitem>
++				<listitem name="{@spl_downgrade_chk}">
++					<data variable="tw_allow_spl_downgrade"/>
++				</listitem>
+ 				<listitem name="{@unmount_sys_install}">
+--- a/gui/theme/common/languages/en.xml
++++ b/gui/theme/common/languages/en.xml
+@@ -1245,1 +1245,2 @@
+ 		<string name="lk_protect_chk">Protect LK partition (OTA compatibility warning)</string>
++		<string name="spl_downgrade_chk">Allow SPL downgrade</string>
