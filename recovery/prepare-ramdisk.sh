@@ -398,7 +398,8 @@ for bin in \
     bin/hw/android.hardware.security.keymint@3.0-service.mitee \
     bin/hw/android.hardware.gatekeeper-service.mitee \
     bin/hw/android.hardware.weaver-service.nxp \
-    bin/hw/vendor.xiaomi.hardware.secure_element-service
+    bin/hw/vendor.xiaomi.hardware.secure_element-service \
+    bin/hw/android.hardware.boot-service.mtk
 do
     test -x "$vendor_hal_dst/$bin" || die "missing vendor HAL binary: $bin"
 done

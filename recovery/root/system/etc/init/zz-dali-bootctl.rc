@@ -1,5 +1,14 @@
-# dali uses the HIDL boot HAL (android.hardware.boot@1.0-service) that ships
-# with the OrangeFox ramdisk. The MTK AIDL boot HAL (boot-service.mtk_recovery)
-# is not present in this device tree, so the AIDL boot-control path is
-# disabled (OF_USE_AIDL_BOOT_CONTROL := 0) and init.recovery.project.rc starts
-# boot-hal-1-0 instead.
+import /init.recovery.project.rc
+
+# Official MTK AIDL boot HAL extracted from the stock vendor partition.
+# The AIDL binary name is android.hardware.boot-service.mtk (not *_recovery);
+# it writes UFS boot-region attributes through libmtk_bsg, which ships in the
+# ramdisk /system/lib64 closure. OF_USE_AIDL_BOOT_CONTROL=1 selects this path.
+service vendor.boot-default /vendor/bin/hw/android.hardware.boot-service.mtk
+    override
+    class early_hal
+    user root
+    group root system
+    setenv LD_LIBRARY_PATH /system/lib64:/vendor/lib64:/vendor/lib64/hw
+    seclabel u:r:hal_bootctl_default:s0
+    interface aidl android.hardware.boot.IBootControl/default
