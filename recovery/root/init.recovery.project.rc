@@ -32,7 +32,7 @@ on early-init
     restorecon_recursive /mnt/vendor/persist
 
 on property:servicemanager.ready=true
-    start vendor.boot-default
+    start boot-hal-1-0
 
 service tee-supplicant /vendor/bin/tee-supplicant
     class core
