@@ -34,3 +34,15 @@
 @@ -1245,1 +1245,2 @@
  		<string name="lk_protect_chk">Protect LK partition (OTA compatibility warning)</string>
 +		<string name="spl_downgrade_chk">Allow SPL downgrade</string>
+
+--- a/data.cpp
++++ b/data.cpp
+@@ -1265,5 +1265,8 @@ void DataManager::SetDefaultValues()
+   mPersist.SetValue(TW_TIME_ZONE_GUIDST, "0");
+   mPersist.SetValue(TW_AUTO_REFLASHTWRP_VAR, "1");
++  // OrangeFox "Allow SPL downgrade" toggle: default to unchecked; the
++  // checkbox state and the value read by twinstall stay in sync (unchecked).
++  mPersist.SetValue("tw_allow_spl_downgrade", "0");
+   if (str == "dali")
+     mPersist.SetValue(TW_LK_PROTECT_VAR, "1");
+
