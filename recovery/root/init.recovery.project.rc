@@ -15,7 +15,7 @@ on early-init
     # keystore2 aborts until KeyMint is up; keep it stopped and start it only
     # after the crypto HAL chain is running.
     stop keystore2
-    restorecon /system/bin/hw/android.hardware.boot-service.mtk_recovery
+    restorecon /vendor/bin/hw/android.hardware.boot-service.mtk
     mkdir /odm 0755 root root
     mkdir /usb_otg 0755 root root
     mkdir /mnt/vendor 0755 root root

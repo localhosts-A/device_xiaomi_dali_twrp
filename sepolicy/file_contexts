@@ -3,7 +3,7 @@
 /(vendor|system/vendor)/bin/hw/android\.hardware\.gatekeeper-service\.mitee u:object_r:hal_gatekeeper_default_exec:s0
 /(vendor|system/vendor)/bin/hw/android\.hardware\.weaver-service\.nxp u:object_r:hal_weaver_default_exec:s0
 /(vendor|system/vendor)/bin/hw/vendor\.xiaomi\.hardware\.secure_element-service u:object_r:hal_secure_element_default_exec:s0
-/system/bin/hw/android\.hardware\.boot-service\.mtk_recovery u:object_r:hal_bootctl_default_exec:s0
+/(vendor|system/vendor)/bin/hw/android\.hardware\.boot-service\.mtk u:object_r:hal_bootctl_default_exec:s0
 /mnt/vendor/persist(/.*)? u:object_r:persist_data_file:s0
 /mnt/vendor/persist/data(/.*)? u:object_r:mitee_sfs_file:s0
 /mnt/vendor/persist/fdsd(/.*)? u:object_r:vendor_persist_drm_file:s0
