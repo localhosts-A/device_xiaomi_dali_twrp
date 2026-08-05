@@ -31,9 +31,7 @@ system_dlkm /system_dlkm ext4 ro wait,slotselect,logical,first_stage_mount
 /dev/block/by-name/userdata /data f2fs noatime,nosuid,nodev,discard,noflush_merge,fsync_mode=nobarrier,reserve_root=134217,resgid=1065,gc_merge,atgc,age_extent_cache,inlinecrypt wait,check,formattable,quota,latemount,resize,reservedsize=128m,checkpoint=fs,fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized,keydirectory=/metadata/vold/metadata_encryption,fsverity
 /dev/block/by-name/rescue /cache ext4 noatime,nosuid,nodev,noauto_da_alloc,discard wait,check,formattable,nofail
 
-# Explicit image-flash targets (A/B slot-aware). PartitionManager creates
-# /super separately for logical-partition handling. Other raw boot-chain and
-# firmware partitions stay hidden from this inventory.
-/dev/block/by-name/init_boot /init_boot emmc defaults slotselect,flashimg
+# Keep vendor_boot as the only explicit image-flash target in this fstab.
+# PartitionManager creates /super separately for logical-partition handling.
+# All raw boot-chain and firmware partitions stay hidden from this inventory.
 /dev/block/by-name/vendor_boot /vendor_boot emmc defaults slotselect,flashimg
-/dev/block/by-name/dtbo /dtbo emmc defaults slotselect,flashimg
