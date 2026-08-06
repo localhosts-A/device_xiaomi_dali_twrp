@@ -29,6 +29,8 @@ SCP_OUTPUT_SHA256 = "e00d0d0a8892ffd07467e4dc38060b6ea901125e4e86f2d8e38fd7ef2a9
 GOODIX_SOURCE_SHA256 = "d299c83cd2e334c22ae510de172146b39146cc4fdb1860fd1c67210a98cda156"
 GOODIX_OUTPUT_SHA256 = "2015fd201a82913ef07b736ac3f35dcc89562cb92359e3d934ec98764219b3c0"
 XIAOMI_TOUCH_SHA256 = "46a49015776c944612669a0c7d7d26d14dc28333e5ffbc8248f75ab0aa4d6e08"
+FOCALTECH_SOURCE_SHA256 = "58ebffcce836b6a603cbd6ef23113b985a2638bcfc584a4b74cbb64ae126f17e"
+FOCALTECH_OUTPUT_SHA256 = "f7c5c0dcde05c33a1b5764f974e782ecd89c9eb7e3dec1299734092e9311578d"
 PLATFORM_DEP_SHA256 = "dd972abacb2c2cd5475903b8ad681c9985d0a3be67fd2e6f65c812305be8034c"
 
 PACIASP = bytes.fromhex("3f2303d5")
@@ -68,6 +70,21 @@ MODULE_SPECS = {
         "changed_bytes": 11,
         "required_relocation": None,
     },
+    "focaltech_touch_dali.ko": {
+        "source_sha256": FOCALTECH_SOURCE_SHA256,
+        "output_sha256": FOCALTECH_OUTPUT_SHA256,
+        "size": 771848,
+        "symbol": "scp_tp_init",
+        "section": ".text",
+        "section_index": 14,
+        "value": 0x32A24,
+        "symbol_size": 0x174,
+        "file_offset": 0x37A24,
+        "preimage": bytes.fromhex("3f2303d5fd7bbea9f44f01a9"),
+        "replacement": PACIASP + MOV_W0_ONE + AUTIASP + RET,
+        "changed_bytes": 11,
+        "required_relocation": None,
+    },
 }
 
 COPY_SPECS = {
@@ -94,6 +111,7 @@ REQUIRED_PLATFORM_DEPENDENCIES = (
 
 RECOVERY_DEPENDENCIES = (
     "goodix_core_dali.ko: tui-common.ko xiaomi_touch_dali.ko scp.ko mtk_tinysys_ipi.ko mtk_rpmsg_mbox.ko mtk-mbox.ko",
+    "focaltech_touch_dali.ko: tui-common.ko xiaomi_touch_dali.ko scp.ko mtk_tinysys_ipi.ko mtk_rpmsg_mbox.ko mtk-mbox.ko",
     "xiaomi_touch_dali.ko:",
     "scp.ko: mtk_tinysys_ipi.ko mtk_rpmsg_mbox.ko mtk-mbox.ko",
     "mtk_gpueb.ko: mtk_tinysys_ipi.ko mtk-mbox.ko",

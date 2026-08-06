@@ -327,21 +327,24 @@ install -m 0755 "$script_dir/root/system/bin/dali-persist-label.sh" "$root/syste
 
 python3 "$script_dir/patch-ap-touch-modules.py" "$module_dir" "$root/lib/modules" ||
     die "failed to stage Recovery-only AP touch modules"
-for module in scp.ko goodix_core_dali.ko xiaomi_touch_dali.ko modules.dep \
+
+# FocalTech/Goodix touch drivers and their MTK SCP/mailbox dependencies are
+# not emitted by patch-ap-touch-modules.py (they already live in the platform
+# modules.dep). Copy them explicitly so the Recovery ramdisk can probe both
+# touch suppliers (dali ships either FocalTech 3683 or Goodix depending on
+# the panel batch).
+for module in tui-common.ko mtk_tinysys_ipi.ko mtk_rpmsg_mbox.ko mtk-mbox.ko; do
+    test -f "$module_dir/$module" || die "missing touch dependency module: $module"
+    install -m 0644 "$module_dir/$module" "$root/lib/modules/$module"
+done
+for module in scp.ko goodix_core_dali.ko focaltech_touch_dali.ko xiaomi_touch_dali.ko modules.dep \
     flashlight.ko leds-mt6379.ko leds-mt6379pmic.ko mtk_gpueb.ko mtk_pbm.ko \
+    tui-common.ko mtk_tinysys_ipi.ko mtk_rpmsg_mbox.ko mtk-mbox.ko modules.dep \
     mtk_peak_power_budget.ko cl_dsp-core.ko cs40l26-core.ko cs40l26-i2c.ko \
     cs40l26-spi.ko snd-soc-cs40l26.ko
 do
     test -f "$root/lib/modules/$module" || die "missing staged module input: $module"
 done
-
-find "$root/lib/modules" -type f -iname "*focaltech*" -delete
-find "$root/lib/modules" -type l -iname "*focaltech*" -delete
-stale_focaltech=$(find "$root/lib/modules" -iname "*focaltech*" -print -quit)
-[ -z "$stale_focaltech" ] || die "stale FocalTech entry remains in Recovery root"
-if grep -F -- "focaltech_touch_dali.ko" "$root/lib/modules/modules.dep" >/dev/null; then
-    die "Recovery module metadata still references FocalTech"
-fi
 
 # CS40L26 haptic firmware must be reachable from the kernel firmware loader
 # without mounting the real vendor partition. Stage the official vendor files

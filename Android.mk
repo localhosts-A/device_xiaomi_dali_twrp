@@ -13,6 +13,11 @@ LOCAL_ADDITIONAL_DEPENDENCIES := \
     $(LOCAL_PATH)/prebuilt/recovery_modules/cs40l26-spi.ko \
     $(LOCAL_PATH)/prebuilt/recovery_modules/flashlight.ko \
     $(LOCAL_PATH)/prebuilt/recovery_modules/goodix_core_dali.ko \
+    $(LOCAL_PATH)/prebuilt/recovery_modules/focaltech_touch_dali.ko \
+    $(LOCAL_PATH)/prebuilt/recovery_modules/tui-common.ko \
+    $(LOCAL_PATH)/prebuilt/recovery_modules/mtk_tinysys_ipi.ko \
+    $(LOCAL_PATH)/prebuilt/recovery_modules/mtk_rpmsg_mbox.ko \
+    $(LOCAL_PATH)/prebuilt/recovery_modules/mtk-mbox.ko \
     $(LOCAL_PATH)/prebuilt/recovery_modules/leds-mt6379.ko \
     $(LOCAL_PATH)/prebuilt/recovery_modules/leds-mt6379pmic.ko \
     $(LOCAL_PATH)/prebuilt/recovery_modules/mtk_gpueb.ko \

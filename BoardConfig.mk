@@ -100,7 +100,7 @@ OF_FL_PATH1 := /sys/class/leds/white:flash-1
 OF_FL_PATH2 := /sys/class/leds/white:flash-2
 
 TW_LOAD_VENDOR_BOOT_MODULES := true
-TW_LOAD_VENDOR_MODULES := "teeperf.ko mitee.ko rpmb.ko rpmb-mtk.ko p73.ko mtk_gpueb.ko mtk_pbm.ko mtk_peak_power_budget.ko flashlight.ko leds-mt6379.ko leds-mt6379pmic.ko xiaomi_touch_dali.ko scp.ko goodix_core_dali.ko cl_dsp-core.ko cs40l26-core.ko cs40l26-i2c.ko cs40l26-spi.ko snd-soc-cs40l26.ko"
+TW_LOAD_VENDOR_MODULES := "teeperf.ko mitee.ko rpmb.ko rpmb-mtk.ko p73.ko mtk_gpueb.ko mtk_pbm.ko mtk_peak_power_budget.ko flashlight.ko leds-mt6379.ko leds-mt6379pmic.ko xiaomi_touch_dali.ko scp.ko goodix_core_dali.ko focaltech_touch_dali.ko tui-common.ko mtk_tinysys_ipi.ko mtk_rpmsg_mbox.ko mtk-mbox.ko cl_dsp-core.ko cs40l26-core.ko cs40l26-i2c.ko cs40l26-spi.ko snd-soc-cs40l26.ko"
 
 # Recovery has no apexd or linkerconfig; skip unsupported APEX loop setup.
 TW_EXCLUDE_APEX := true
