@@ -1,0 +1,149 @@
+diff --git a/Android.bp b/Android.bp
+index 62afe092..b95c47a6 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -1364,3 +1364,16 @@ cc_fuzz {
+         ]
+     },
+ }
++
++cc_binary {
++    name: "merge_ab_tool",
++    recovery_available: true,
++    srcs: ["merge_ab_tool.cc"],
++    shared_libs: [
++        "libsnapshot",
++        "libbase",
++        "liblog",
++    ],
++    cflags: ["-Wno-unused-parameter"],
++    include_dirs: ["system/core/fs_mgr/include", "system/core/fs_mgr/libdm/include", "system/core/fs_mgr/libfstab/include", "system/core/fs_mgr/liblp/include", "system/core/fs_mgr/libfiemap/include"],
++}
+diff --git a/aosp/dynamic_partition_control_android.cc b/aosp/dynamic_partition_control_android.cc
+index 3548959c..1269e76b 100644
+--- a/aosp/dynamic_partition_control_android.cc
++++ b/aosp/dynamic_partition_control_android.cc
+@@ -207,6 +207,17 @@ bool DynamicPartitionControlAndroid::MapPartitionInternal(
+     // CreateLogicalPartition as snapshots are not created in the first place.
+     params.timeout_ms = kMapSnapshotTimeout;
+     success = snapshot_->MapUpdateSnapshot(params, path);
++    if (!success) {
++      // A stale snapshot record (e.g. super metadata UPDATED flag left by an
++      // interrupted cross-version downgrade OTA) makes MapUpdateSnapshot fail
++      // when its snapshot status file is missing. Do not abort the install;
++      // fall back to a plain logical partition map so the payload can still
++      // be written to the target slot.
++      LOG(WARNING) << "MapUpdateSnapshot failed for " << target_partition_name
++                   << "; falling back to CreateLogicalPartition";
++      params.timeout_ms = kMapTimeout;
++      success = CreateLogicalPartition(params, path);
++    }
+   } else {
+     params.timeout_ms = kMapTimeout;
+     success = CreateLogicalPartition(params, path);
+diff --git a/aosp/hardware_android.cc b/aosp/hardware_android.cc
+index f8732abd..c6faae02 100644
+--- a/aosp/hardware_android.cc
++++ b/aosp/hardware_android.cc
+@@ -258,7 +258,8 @@ int64_t HardwareAndroid::GetBuildTimestamp() const {
+ // Returns true if the device runs an userdebug build, and explicitly allows OTA
+ // downgrade.
+ bool HardwareAndroid::AllowDowngrade() const {
+-  return GetBoolProperty("ro.ota.allow_downgrade", false) &&
++  return (GetBoolProperty("ro.ota.allow_downgrade", false) ||
++          GetBoolProperty("of.allow_spl_downgrade", false)) &&
+          GetBoolProperty("ro.debuggable", false);
+ }
+ 
+diff --git a/aosp/update_attempter_android.cc b/aosp/update_attempter_android.cc
+index 0f6fc5ce..14de5bac 100644
+--- a/aosp/update_attempter_android.cc
++++ b/aosp/update_attempter_android.cc
+@@ -15,6 +15,7 @@
+ //
+ 
+ #include "update_engine/aosp/update_attempter_android.h"
++#include "update_engine/common/platform_constants.h"
+ 
+ #include <algorithm>
+ #include <map>
+@@ -319,6 +320,17 @@ bool UpdateAttempterAndroid::ApplyPayload(
+     install_plan_.disable_vabc =
+         GetHeaderAsBool(headers[kPayloadDisableVABC], false);
+   }
++  // Sideload in recovery: force non-VAB (direct write) mode so the install
++  // does not depend on /metadata snapshot state (a missing /metadata/ota
++  // layout makes VAB snapshot writes fail, leaving the target slot half
++  // updated). Direct writes make boot + system consistent immediately.
++  if (constants::kIsRecovery) {
++    install_plan_.disable_vabc = true;
++    // Let recovery (twinstall) know the install wrote partitions directly
++    // (no VAB snapshots), so it can skip the snapshot merge step.
++    android::base::SetProperty("of.direct_write_mode", "1");
++    LOG(INFO) << "Forcing non-VAB direct-write mode in recovery.";
++  }
+ 
+   install_plan_.switch_slot_on_reboot =
+       GetHeaderAsBool(headers[kPayloadPropertySwitchSlotOnReboot], true);
+diff --git a/payload_consumer/delta_performer.cc b/payload_consumer/delta_performer.cc
+index daf78be4..586a1309 100644
+--- a/payload_consumer/delta_performer.cc
++++ b/payload_consumer/delta_performer.cc
+@@ -408,7 +408,9 @@ bool DeltaPerformer::CheckSPLDowngrade() {
+   }
+   const auto new_spl = manifest_.security_patch_level();
+   const auto current_spl =
+-      android::base::GetProperty("ro.build.version.security_patch", "");
++      android::base::GetProperty(
++          "of.installed_os_spl",
++          android::base::GetProperty("ro.build.version.security_patch", ""));
+   if (current_spl.empty()) {
+     LOG(WARNING) << "Failed to get ro.build.version.security_patch, unable to "
+                     "determine if this OTA is a SPL downgrade. Assuming this "
+@@ -416,6 +418,11 @@ bool DeltaPerformer::CheckSPLDowngrade() {
+     return true;
+   }
+   if (new_spl < current_spl) {
++    if (android::base::GetBoolProperty("of.allow_spl_downgrade", false)) {
++      install_plan_->powerwash_required = true;
++      LOG(WARNING) << "SPL downgrade explicitly allowed (of.allow_spl_downgrade)";
++      return true;
++    }
+     const auto avb_state =
+         android::base::GetProperty("ro.boot.verifiedbootstate", "green");
+     if (android::base::EqualsIgnoreCase(avb_state, "green")) {
+diff --git a/payload_consumer/filesystem_verifier_action.cc b/payload_consumer/filesystem_verifier_action.cc
+index 5345085c..a8b29564 100644
+--- a/payload_consumer/filesystem_verifier_action.cc
++++ b/payload_consumer/filesystem_verifier_action.cc
+@@ -83,6 +83,14 @@ const off_t kReadFileBufferSize = 128 * 1024;
+ constexpr float kVerityProgressPercent = 0.3;
+ constexpr float kEncodeFECPercent = 0.3;
+ 
++bool IsProtectedBootChainPartition(const InstallPlan::Partition& partition) {
++  const char* protection = std::getenv("OF_LK_PROTECTION");
++  if (protection == nullptr || std::string(protection) != "1") {
++    return false;
++  }
++  return partition.name == "lk" || partition.name == "preloader_raw";
++}
++
+ }  // namespace
+ 
+ void FilesystemVerifierAction::PerformAction() {
+@@ -489,6 +497,15 @@ void FilesystemVerifierAction::FinishPartitionHashing() {
+   switch (verifier_step_) {
+     case VerifierStep::kVerifyTargetHash:
+       if (partition.target_hash != hasher_->raw_hash()) {
++        if (IsProtectedBootChainPartition(partition) &&
++            partition.source_hash.empty()) {
++          LOG(WARNING) << "LK protection: accepting virtual target hash mismatch for full OTA partition "
++                       << partition.name << "; expected "
++                       << HexEncode(partition.target_hash) << ", actual "
++                       << HexEncode(hasher_->raw_hash());
++          partition_index_++;
++          break;
++        }
+         LOG(ERROR) << "New '" << partition.name
+                    << "' partition verification failed.";
+         if (partition.source_hash.empty()) {

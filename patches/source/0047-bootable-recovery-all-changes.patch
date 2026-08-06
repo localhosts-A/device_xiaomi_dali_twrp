@@ -1,0 +1,2014 @@
+diff --git a/Android.mk b/Android.mk
+index e67fcb50..0eafd334 100755
+--- a/Android.mk
++++ b/Android.mk
+@@ -672,6 +672,20 @@ LOCAL_POST_INSTALL_CMD += \
+ 
+ include $(BUILD_EXECUTABLE)
+ 
++# Dali invokes this C helper only through the LK-protection updater path.
++# Device trees opt in through TARGET_RECOVERY_DEVICE_MODULES.
++include $(CLEAR_VARS)
++LOCAL_MODULE := of_lk_protection_exec
++LOCAL_MODULE_STEM := of-lk-protection-exec
++LOCAL_MODULE_TAGS := optional
++LOCAL_MODULE_CLASS := RECOVERY_EXECUTABLES
++LOCAL_MODULE_PATH := $(TARGET_RECOVERY_ROOT_OUT)/system/bin
++LOCAL_SRC_FILES := lk_protection_exec.c
++LOCAL_CFLAGS := -Wall -Werror -D_FILE_OFFSET_BITS=64
++LOCAL_CXX_STL := none
++LOCAL_SHARED_LIBRARIES := libc
++include $(BUILD_EXECUTABLE)
++
+ # Symlink for file_contexts
+ include $(CLEAR_VARS)
+ 
+diff --git a/data.cpp b/data.cpp
+index 7ca8d86b..15c7d6bc 100755
+--- a/data.cpp
++++ b/data.cpp
+@@ -1239,6 +1239,7 @@ void DataManager::SetDefaultValues()
+   // the canonical current device
+   str = TWFunc::Fox_Property_Get("ro.product.device");
+   mConst.SetValue("fox_product_device", str);
++  mConst.SetValue("of_lk_protection_supported", str == "dali" ? "1" : "0");
+ 
+   // let the device name in the "About" menu show the canonical value, rather than the one determined at build time
+   mData.SetValue(FOX_COMPATIBILITY_DEVICE, str.c_str());
+@@ -1260,8 +1261,13 @@ void DataManager::SetDefaultValues()
+   mPersist.SetValue(TW_TIME_ZONE_VAR, OF_DEFAULT_TIMEZONE);
+   mPersist.SetValue(TW_TIME_ZONE_GUISEL, OF_DEFAULT_TIMEZONE);
+   mPersist.SetValue(TW_TIME_ZONE_GUIOFFSET, "0");
+-  mPersist.SetValue(TW_TIME_ZONE_GUIDST, "1");
++  mPersist.SetValue(TW_TIME_ZONE_GUIDST, "0");
+   mPersist.SetValue(TW_AUTO_REFLASHTWRP_VAR, "1");
++  // OrangeFox "Allow SPL downgrade" toggle: default to unchecked; the
++  // checkbox state and the value read by twinstall stay in sync (unchecked).
++  mPersist.SetValue("tw_allow_spl_downgrade", "0");
++  if (str == "dali")
++    mPersist.SetValue(TW_LK_PROTECT_VAR, "1");
+ 
+   // avb2.0 disable
+   // by patching boot image
+diff --git a/gui/action.cpp b/gui/action.cpp
+index 42e30797..da65830c 100755
+--- a/gui/action.cpp
++++ b/gui/action.cpp
+@@ -20,6 +20,7 @@
+ */
+ 
+ #include <stdarg.h>
++#include <errno.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -1372,8 +1373,7 @@ int GUIAction::screenshotImpl(std::string arg __unused)
+ 	uid_t uid = AID_MEDIA_RW;
+ 	gid_t gid = AID_MEDIA_RW;
+ 
+-	strcpy(path, Fox_Home.c_str());
+-	strcat(path, "/screenshots/");
++	strcpy(path, "/sdcard/Pictures/screenshots/");
+ 
+ 	if (!TWFunc::Create_Dir_Recursive(path, 0775, uid, gid)) {
+ 		strcpy(path, "/tmp/");
+@@ -2131,7 +2131,8 @@ int GUIAction::adbsideload(std::string arg __unused)
+ 
+ 		// wait for the adb connection
+ 		Device::BuiltinAction reboot_action = Device::REBOOT_BOOTLOADER;
+-		int ret = twrp_sideload("/", &reboot_action);
++		int wipe_cache = 0;
++		int ret = twrp_sideload("/", &reboot_action, &wipe_cache);
+ 		sideload_child_pid = GetMiniAdbdPid();
+ 		DataManager::SetValue("tw_has_cancel", 0); // Remove cancel button from gui now that the zip install is going to start
+ 
+@@ -2140,7 +2141,6 @@ int GUIAction::adbsideload(std::string arg __unused)
+ 				gui_msg("need_new_adb=You need adb 1.0.32 or newer to sideload to this device.");
+ 			ret = 1; // failure
+ 		} else {
+-			int wipe_cache = 0;
+ 			int wipe_dalvik = 0;
+ 			DataManager::GetValue("tw_wipe_dalvik", wipe_dalvik);
+ 			if (wipe_cache || DataManager::GetIntValue("tw_wipe_cache"))
+@@ -2152,6 +2152,7 @@ int GUIAction::adbsideload(std::string arg __unused)
+ 		TWFunc::Toggle_MTP(mtp_was_enabled);
+ 		reinject_after_flash();
+ 		operation_end(ret);
++		gui_changePage("main");
+ 	}
+ 	return 0;
+ }
+@@ -2168,6 +2169,9 @@ int GUIAction::adbsideloadcancel(std::string arg __unused)
+ 	sideload_child_pid = GetMiniAdbdPid();
+ 	if (!sideload_child_pid) {
+ 		LOGERR("Unable to get child ID\n");
++		sideload_child_pid = 0;
++		TWFunc::Fox_Property_Set("ctl.start", "adbd");
++		DataManager::SetValue("tw_page_done", "1"); // Release the sideload page after minadbd exited.
+ 		return 0;
+ 	}
+ 	::sleep(1);
+@@ -2175,8 +2179,26 @@ int GUIAction::adbsideloadcancel(std::string arg __unused)
+ 	kill(sideload_child_pid, SIGTERM);
+ 	int status;
+ 	LOGINFO("Waiting for child sideload process to exit.\n");
+-	waitpid(sideload_child_pid, &status, 0);
++	bool child_exited = false;
++	for (int attempt = 0; attempt < 5; ++attempt) {
++		const pid_t wait_result = waitpid(sideload_child_pid, &status, WNOHANG);
++		if (wait_result == sideload_child_pid || (wait_result < 0 && errno == ECHILD)) {
++			child_exited = true;
++			break;
++		}
++		if (wait_result < 0) {
++			LOGERR("Unable to wait for child sideload process: %s\n", strerror(errno));
++			break;
++		}
++		::sleep(1);
++	}
++	if (!child_exited) {
++		LOGINFO("Child sideload process did not exit; sending SIGKILL.\n");
++		kill(sideload_child_pid, SIGKILL);
++		waitpid(sideload_child_pid, &status, 0);
++	}
+ 	sideload_child_pid = 0;
++	TWFunc::Fox_Property_Set("ctl.start", "adbd");
+ 	DataManager::SetValue("tw_page_done", "1"); // For OpenRecoveryScript support
+ 	return 0;
+ }
+diff --git a/gui/gui.cpp b/gui/gui.cpp
+index 71bbc967..fd8c0925 100644
+--- a/gui/gui.cpp
++++ b/gui/gui.cpp
+@@ -603,6 +603,13 @@ static void ors_command_read()
+ 				DataManager::SetValue("tw_action_param", command);
+ 				// ...and switch back to the current page when finished
+ 				std::string currentPage = PageManager::GetCurrentPage();
++				const bool is_sideload_command =
++						strncmp(command, "sideload", 8) == 0 &&
++						(command[8] == '\0' || command[8] == ' ' ||
++						 command[8] == '\n' || command[8] == '\r');
++				if (is_sideload_command) {
++					currentPage = "main";
++				}
+ 				DataManager::SetValue("tw_has_action2", "1");
+ 				DataManager::SetValue("tw_action2", "page");
+ 				DataManager::SetValue("tw_action2_param", currentPage);
+diff --git a/gui/slidervalue.cpp b/gui/slidervalue.cpp
+index b068b2ec..0d4d90e3 100755
+--- a/gui/slidervalue.cpp
++++ b/gui/slidervalue.cpp
+@@ -316,9 +316,15 @@ int GUISliderValue::Render(void)
+ 	if (mHandleImage && mHandleImage->GetResource())
+ 	{
+ 		gr_surface s = mHandleImage->GetResource();
++		int handleW = mHandleImage->GetWidth();
++		int handleH = mHandleImage->GetHeight();
+ 		if (mDragging && mHandleHoverImage && mHandleHoverImage->GetResource())
++		{
+ 			s = mHandleHoverImage->GetResource();
+-		gr_blit(s, 0, 0, mSliderW, mSliderH, sliderX, mLineY + (mLineH/2 - mSliderH/2));
++			handleW = mHandleHoverImage->GetWidth();
++			handleH = mHandleHoverImage->GetHeight();
++		}
++		gr_blit(s, 0, 0, handleW, handleH, sliderX, mLineY + (mLineH/2 - handleH/2));
+ 	}
+ 	else
+ 	{
+diff --git a/gui/theme/common/languages/en.xml b/gui/theme/common/languages/en.xml
+index b8a3ba3d..e26cc6e6 100644
+--- a/gui/theme/common/languages/en.xml
++++ b/gui/theme/common/languages/en.xml
+@@ -1012,7 +1012,8 @@
+ 		<string name="fox_vab_yes">* Virtual_AB: yes</string>
+ 		<string name="fox_vab_no">* Virtual_AB: no</string>
+ 		<string name="fox_kernel">* Kernel:     {1}</string>
+-		<string name="fox_miui_rom">* MIUI ROM (SDK:{1}, {2})</string>
++		<string name="fox_miui_rom">* MIUI ROM (SDK:{1}, {2})</string>	<string name="fox_rom_label">* {1} (SDK:{2}, {3})</string>
++
+ 		<string name="fox_custom_rom">* Custom ROM (SDK:{1}, {2})</string>
+ 		<string name="fox_fingerprint">* Fingerprint: {1}</string>
+ 		<string name="fox_no_rom">* No ROM.</string>
+@@ -1241,6 +1242,8 @@
+ 		<string name="unmap_super_devices_complete">Unmapped all Super Devices</string>
+ 
+ 		<string name="auto_reflashtwrp_chk">Reflash OrangeFox after flashing a ROM</string>
++		<string name="lk_protect_chk">Protect LK partition (OTA compatibility warning)</string>
++		<string name="spl_downgrade_chk">Allow SPL downgrade</string>
+ 		<string name="modified_ramdisk_error">ramdisk files have been modified, unable to create ramdisk to flash. fastboot boot OrangeFox and try this option again or go back to Files and install img file as Recovery Ramdisk using Install Ramdisk button.</string>
+ 		<string name="create_ramdisk_error">failed to create ramdisk to flash.</string>
+ 		<string name="reflash_twrp">Flash current OrangeFox</string>
+diff --git a/gui/theme/extra-languages/languages/zh_CN.xml b/gui/theme/extra-languages/languages/zh_CN.xml
+index 87c5ea8b..590af1ce 100644
+--- a/gui/theme/extra-languages/languages/zh_CN.xml
++++ b/gui/theme/extra-languages/languages/zh_CN.xml
+@@ -1166,6 +1166,7 @@
+         <string name="unmapping_super_devices">正在取消映射Super设备...</string>
+         <string name="unmap_super_devices_complete">已取消映射所有Super设备</string>
+         <string name="auto_reflashtwrp_chk">刷入ROM后重新刷入OrangeFox</string>
++        <string name="lk_protect_chk">保护LK分区（含LK的OTA可能不兼容）</string>
+         <string name="modified_ramdisk_error">ramdisk文件已被修改，无法创建ramdisk以进行刷入。 fastboot引导OrangeFox并再次尝试此选项，或返回文件并使用“安装Ramdisk”按钮将img文件安装为恢复Ramdisk。</string>
+         <string name="create_ramdisk_error">无法创建ramdisk以进行刷入。</string>
+         <string name="reflash_twrp">刷入当前OrangeFox</string>
+diff --git a/gui/theme/portrait_hdpi/images/SVG/About/card.svg b/gui/theme/portrait_hdpi/images/SVG/About/card.svg
+index 3055dfc3..fb2e342d 100644
+--- a/gui/theme/portrait_hdpi/images/SVG/About/card.svg
++++ b/gui/theme/portrait_hdpi/images/SVG/About/card.svg
+@@ -1,4 +1,4 @@
+ <?xml version="1.0" encoding="utf-8"?>
+-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 336">
+-	<path display="inline" fill="#000000" fill-opacity="1" stroke-width="23.7514" stroke-linecap="round" d="M 71.845703,48 C 58.635534,48 48,58.635534 48,71.845703 V 264.1543 C 48,277.36447 58.635534,288 71.845703,288 H 1008.1543 C 1021.3645,288 1032,277.36447 1032,264.1543 V 71.845703 C 1032,58.635534 1021.3645,48 1008.1543,48 Z M 168,72 a 96,96 0 0 1 96,96 96,96 0 0 1 -96,96 96,96 0 0 1 -96,-96 96,96 0 0 1 96,-96 z" />
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 384">
++	<path display="inline" fill="#000000" fill-opacity="1" stroke-width="23.7514" stroke-linecap="round" d="M 71.845703,48 C 58.635534,48 48,58.635534 48,71.845703 V 312.1543 C 48,325.36447 58.635534,336 71.845703,336 H 1008.1543 C 1021.3645,336 1032,325.36447 1032,312.1543 V 71.845703 C 1032,58.635534 1021.3645,48 1008.1543,48 Z M 168,72 a 96,96 0 0 1 96,96 96,96 0 0 1 -96,96 96,96 0 0 1 -96,-96 96,96 0 0 1 96,-96 z" />
+ </svg>
+diff --git a/gui/theme/portrait_hdpi/pages/advanced.xml b/gui/theme/portrait_hdpi/pages/advanced.xml
+index 936a8874..8f826744 100644
+--- a/gui/theme/portrait_hdpi/pages/advanced.xml
++++ b/gui/theme/portrait_hdpi/pages/advanced.xml
+@@ -913,6 +913,13 @@
+ 					<condition var1="fox_disable_reflash_current" op="!=" var2="1"/>
+ 					<data variable="tw_auto_reflashtwrp"/>
+ 				</listitem>
++				<listitem name="{@lk_protect_chk}">
++					<condition var1="of_lk_protection_supported" var2="1"/>
++					<data variable="tw_lk_protect"/>
++				</listitem>
++				<listitem name="{@spl_downgrade_chk}">
++					<data variable="tw_allow_spl_downgrade"/>
++				</listitem>
+ 				<listitem name="{@auto_disable_avb2=Disable vbmeta AVB2.0}">
+ 					<condition var1="fox_auto_disable_vbmeta_avb2" var2="1"/>
+ 					<data variable="tw_auto_disable_avb2"/>
+diff --git a/gui/theme/portrait_hdpi/pages/install.xml b/gui/theme/portrait_hdpi/pages/install.xml
+index ea88792a..c3cd6449 100644
+--- a/gui/theme/portrait_hdpi/pages/install.xml
++++ b/gui/theme/portrait_hdpi/pages/install.xml
+@@ -61,6 +61,13 @@
+ 					<condition var1="fox_disable_reflash_current" op="!=" var2="1"/>
+ 					<data variable="tw_auto_reflashtwrp"/>
+ 				</listitem>
++				<listitem name="{@lk_protect_chk}">
++					<condition var1="of_lk_protection_supported" var2="1"/>
++					<data variable="tw_lk_protect"/>
++				</listitem>
++				<listitem name="{@spl_downgrade_chk}">
++					<data variable="tw_allow_spl_downgrade"/>
++				</listitem>
+ 				<listitem name="{@unmount_sys_install}">
+ 					<data variable="tw_unmount_system"/>
+ 				</listitem>
+@@ -232,6 +239,13 @@
+ 					<condition var1="fox_disable_reflash_current" op="!=" var2="1"/>
+ 					<data variable="tw_auto_reflashtwrp"/>
+ 				</listitem>
++				<listitem name="{@lk_protect_chk}">
++					<condition var1="of_lk_protection_supported" var2="1"/>
++					<data variable="tw_lk_protect"/>
++				</listitem>
++				<listitem name="{@spl_downgrade_chk}">
++					<data variable="tw_allow_spl_downgrade"/>
++				</listitem>
+ 				<listitem name="{@unmount_sys_install}">
+ 					<data variable="tw_unmount_system"/>
+ 				</listitem>
+diff --git a/kernel_module_loader.cpp b/kernel_module_loader.cpp
+index 43fc5694..447ca27a 100644
+--- a/kernel_module_loader.cpp
++++ b/kernel_module_loader.cpp
+@@ -30,6 +30,7 @@ bool KernelModuleLoader::Load_Vendor_Modules() {
+ 	// check /vendor/lib/modules/N.N-gki (vendor mounted)
+ 	// check /vendor_dlkm/lib/modules (vendor_dlkm mounted)
+ 	if (android::base::GetBoolProperty(TW_MODULES_MOUNTED_PROP, false)) return true;
++	const bool skip_vendor_mount = android::base::GetBoolProperty("of.skip_vendor_module_mount", false);
+ 	int modules_loaded = 0;
+ 
+ 	LOGINFO("Attempting to load modules\n");
+@@ -90,11 +91,17 @@ bool KernelModuleLoader::Load_Vendor_Modules() {
+ 
+ 	if (ven) {
+ 		LOGINFO("Checking mounted /vendor\n");
+-		ven->Mount(true);
++		if (!skip_vendor_mount)
++			ven->Mount(true);
++		else
++			LOGINFO("Skipping /vendor mount for module loading (of.skip_vendor_module_mount)\n");
+ 	}
+ 	if (ven_dlkm) {
+ 		LOGINFO("Checking mounted /vendor_dlkm\n");
+-		ven_dlkm->Mount(true);
++		if (!skip_vendor_mount)
++			ven_dlkm->Mount(true);
++		else
++			LOGINFO("Skipping /vendor_dlkm mount for module loading\n");
+ 	}
+ 
+ 	for (auto&& module_dir:vendor_module_dirs) {
+@@ -106,9 +113,9 @@ bool KernelModuleLoader::Load_Vendor_Modules() {
+ 	if (modules_loaded >= expected_module_count) goto exit;
+ 
+ exit:
+-	if (ven)
++	if (ven && !skip_vendor_mount)
+ 		ven->UnMount(false);
+-	if (ven_dlkm)
++	if (ven_dlkm && !skip_vendor_mount)
+ 		ven_dlkm->UnMount(false, MNT_DETACH);
+ 
+ 	if (modules_loaded == 0)
+diff --git a/minuitwrp/events.cpp b/minuitwrp/events.cpp
+index e497df62..e771815e 100644
+--- a/minuitwrp/events.cpp
++++ b/minuitwrp/events.cpp
+@@ -27,6 +27,7 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <fstream>
++#include <errno.h>
+ #ifdef USE_QTI_AIDL_HAPTICS_FIX_OFF
+ #include <thread>
+ #endif
+@@ -147,12 +148,116 @@ int write_to_file(const std::string& fn, const std::string& line) {
+ 
+ #ifndef TW_NO_HAPTICS
+ #ifndef TW_HAPTICS_TSPDRV
++static int vibrate_force_feedback(int timeout_ms)
++{
++    LOGINFO("dali-evff: trying force-feedback haptics (%d ms)\n", timeout_ms);
++    if (timeout_ms <= 0)
++        return -1;
++    DIR* dir = opendir("/dev/input");
++    if (dir == NULL)
++        return -1;
++
++#define FF_BITS_PER_LONG (sizeof(long) * 8)
++#define FF_NBITS(x) ((((x)-1)/FF_BITS_PER_LONG)+1)
++#define FF_OFF(x)   ((x)%FF_BITS_PER_LONG)
++#define FF_LONG(x)  ((x)/FF_BITS_PER_LONG)
++#define FF_TEST_BIT(bit, array) ((array[FF_LONG(bit)] >> FF_OFF(bit)) & 1)
++
++    int result = -1;
++    struct dirent* de;
++    while ((de = readdir(dir)) != NULL) {
++        if (strncmp(de->d_name, "event", 5) != 0)
++            continue;
++        std::string path = std::string("/dev/input/") + de->d_name;
++        int fd = open(path.c_str(), O_RDWR);
++        if (fd < 0) {
++            LOGINFO("dali-evff: open %s failed errno=%d\n", path.c_str(), errno);
++            continue;
++        }
++
++        unsigned long ff_bits[4];
++        memset(ff_bits, 0, sizeof(ff_bits));
++        int bits_rc = ioctl(fd, EVIOCGBIT(EV_FF, sizeof(ff_bits)), ff_bits);
++        LOGINFO("dali-evff: %s open=ok bits_rc=%d errno=%d bits=%016lx %016lx\n",
++                path.c_str(), bits_rc, errno, ff_bits[0], ff_bits[1]);
++        if (bits_rc >= 0) {
++            struct ff_effect effect;
++            memset(&effect, 0, sizeof(effect));
++            effect.id = -1;
++            effect.replay.delay = 0;
++            effect.replay.length = timeout_ms;
++
++            if (FF_TEST_BIT(FF_RUMBLE, ff_bits)) {
++                effect.type = FF_RUMBLE;
++                effect.u.rumble.strong_magnitude = 0xffff;
++                effect.u.rumble.weak_magnitude = 0xffff;
++            } else if (FF_TEST_BIT(FF_PERIODIC, ff_bits)) {
++                effect.type = FF_PERIODIC;
++                effect.u.periodic.waveform = FF_TEST_BIT(FF_SINE, ff_bits) ? FF_SINE : FF_SQUARE;
++                effect.u.periodic.period = 10;
++                effect.u.periodic.magnitude = 0x6000;
++                effect.u.periodic.offset = 0;
++                effect.u.periodic.phase = 0;
++                effect.u.periodic.custom_data = NULL;
++                effect.u.periodic.custom_len = 0;
++            } else {
++                LOGINFO("dali-evff: %s has no rumble/periodic bits\n", path.c_str());
++                close(fd);
++                continue;
++            }
++
++            if (ioctl(fd, EVIOCSFF, &effect) == 0 && effect.id >= 0) {
++                struct input_event play;
++                memset(&play, 0, sizeof(play));
++                play.type = EV_FF;
++                play.code = effect.id;
++                play.value = 1;
++                if (write(fd, &play, sizeof(play)) == (ssize_t)sizeof(play)) {
++                    result = 0;
++                    LOGINFO("dali-evff: played effect %d on %s\n", effect.id, path.c_str());
++                    // Let the CS40L26 run the full burst, then stop and free
++                    // the effect. Without the erase, the next upload races with
++                    // the still-registered effect and the driver stops the new
++                    // play instantly (log says played, motor never actuates).
++                    int eff_ms = timeout_ms < 60 ? 60 : timeout_ms;
++                    usleep(eff_ms * 1000 + 20000);
++                    struct input_event stop_ev;
++                    memset(&stop_ev, 0, sizeof(stop_ev));
++                    stop_ev.type = EV_FF;
++                    stop_ev.code = effect.id;
++                    stop_ev.value = 0;
++                    write(fd, &stop_ev, sizeof(stop_ev));
++                    ioctl(fd, EVIOCRMFF, effect.id);
++                } else {
++                    LOGINFO("dali-evff: EV_FF write failed on %s errno=%d\n", path.c_str(), errno);
++                }
++            } else {
++                LOGINFO("dali-evff: EVIOCSFF failed on %s errno=%d\n", path.c_str(), errno);
++            }
++        } else {
++            LOGINFO("dali-evff: %s EVIOCGBIT failed errno=%d\n", path.c_str(), errno);
++        }
++        close(fd);
++        if (result == 0)
++            break;
++    }
++    closedir(dir);
++    if (result != 0)
++        LOGINFO("dali-evff: no usable force-feedback device\n");
++    return result;
++}
++
+ int vibrate(int timeout_ms)
+ {
+     if (timeout_ms > 10000) timeout_ms = 1000;
+     char tout[6];
+     sprintf(tout, "%i", timeout_ms);
+ 
++    /* Dali exposes haptics only through the CS40L26 force-feedback input
++     * device; try EV_FF before the legacy sysfs backends. */
++    if (vibrate_force_feedback(timeout_ms) == 0)
++        return 0;
++
+ #ifdef USE_QTI_HAPTICS
+     android::sp<android::hardware::vibrator::V1_2::IVibrator> vib = android::hardware::vibrator::V1_2::IVibrator::getService();
+     if (vib != nullptr) {
+diff --git a/mtp/ffs/MtpFfsHandle.cpp b/mtp/ffs/MtpFfsHandle.cpp
+index a46cf1f2..301704ac 100644
+--- a/mtp/ffs/MtpFfsHandle.cpp
++++ b/mtp/ffs/MtpFfsHandle.cpp
+@@ -115,11 +115,11 @@ void MtpFfsHandle::advise(int fd) {
+ 	for (unsigned i = 0; i < NUM_IO_BUFS; i++) {
+ 		if (posix_madvise(mIobuf[i].bufs.data(), MAX_FILE_CHUNK_SIZE,
+ 				POSIX_MADV_SEQUENTIAL | POSIX_MADV_WILLNEED) != 0)
+-			MTPE("Failed to madvise\n");
++			; // madvise is a hint; FFS may reject it - harmless
+ 	}
+ 	if (posix_fadvise(fd, 0, 0,
+ 				POSIX_FADV_SEQUENTIAL | POSIX_FADV_NOREUSE | POSIX_FADV_WILLNEED) != 0)
+-		MTPE("Failed to fadvise\n");
++		; // fadvise is a hint; FFS may reject it - harmless
+ }
+ 
+ bool MtpFfsHandle::writeDescriptors(bool ptp) {
+diff --git a/openrecoveryscript.cpp b/openrecoveryscript.cpp
+index 304f617c..044fd6ee 100755
+--- a/openrecoveryscript.cpp
++++ b/openrecoveryscript.cpp
+@@ -411,41 +411,28 @@ int OpenRecoveryScript::run_script_file(void) {
+ 				install_cmd = -1;
+ 
+ 				int wipe_cache = 0;
+-				string result;
+-				// pid_t sideload_child_pid;
+-
+ 				gui_msg("start_sideload=Starting ADB sideload feature...");
++				// The configfs gadget needs both adbd and the MTP server to be
++				// ready before the UDC is enabled; stop MTP around the sideload
++				// and restore it afterwards (same as the GUI path).
++				bool mtp_was_enabled = TWFunc::Toggle_MTP(false);
+ 
+-				// ret_val = apply_from_adb("/", &sideload_child_pid);
+ 				Device::BuiltinAction reboot_action = Device::REBOOT_BOOTLOADER;
+-				ret_val = twrp_sideload("/", &reboot_action);
++				ret_val = twrp_sideload("/", &reboot_action, &wipe_cache);
+ 				if (ret_val != 0) {
+ 					if (ret_val == -2)
+ 						gui_err("need_new_adb=You need adb 1.0.32 or newer to sideload to this device.");
+ 					ret_val = 1; // failure
+-				} else if (TWinstall_zip(FUSE_SIDELOAD_HOST_PATHNAME, &wipe_cache) == 0) {
+-					if (wipe_cache)
+-						PartitionManager.Wipe_By_Path("/cache");
+-				} else {
+-					ret_val = 1; // failure
++				} else if (wipe_cache) {
++					PartitionManager.Wipe_By_Path("/cache");
+ 				}
+ 				PartitionManager.Unlock_Block_Partitions();
+ 				PartitionManager.Update_System_Details();
+ 				sideload = 1; // Causes device to go to the home screen afterwards
+ 
+-				pid_t sideload_child_pid = GetMiniAdbdPid();
+-				if (sideload_child_pid != 0) {
+-					LOGINFO("Signaling child sideload process to exit.\n");
+-					struct stat st;
+-					// Calling stat() on this magic filename signals the minadbd
+-					// subprocess to shut down.
+-					stat(FUSE_SIDELOAD_HOST_EXIT_PATHNAME, &st);
+-					int status;
+-					LOGINFO("Waiting for child sideload process to exit.\n");
+-					waitpid(sideload_child_pid, &status, 0);
+-				}
+ 
+ 				property_set("ctl.start", "adbd");
++				TWFunc::Toggle_MTP(mtp_was_enabled);
+ 				gui_msg("done=Done.");
+ 			} else if (strcmp(command, "fixperms") == 0 || strcmp(command, "fixpermissions") == 0 || strcmp(command, "fixcontexts") == 0) {
+ 				ret_val = PartitionManager.Fix_Contexts();
+diff --git a/orangefox.mk b/orangefox.mk
+index 1f02b296..37b63422 100644
+--- a/orangefox.mk
++++ b/orangefox.mk
+@@ -91,7 +91,9 @@ endif
+ ifeq ($(FOX_VIRTUAL_AB_DEVICE),1)
+     LOCAL_CFLAGS += -DFOX_VIRTUAL_AB_DEVICE='"1"'
+     FOX_AB_DEVICE := 1
+-    FOX_VANILLA_BUILD := 1
++    ifeq ($(FOX_VANILLA_BUILD),)
++        FOX_VANILLA_BUILD := 1
++    endif
+ endif
+ 
+ # enable vbmeta patch in magiskboot 24+
+diff --git a/partition.cpp b/partition.cpp
+index c437cc77..8bad5faf 100644
+--- a/partition.cpp
++++ b/partition.cpp
+@@ -38,6 +38,7 @@
+ #include <sstream>
+ #include <android-base/properties.h>
+ #include <libsnapshot/snapshot.h>
++#include <fs_mgr_dm_linear.h>
+ 
+ #include "cutils/properties.h"
+ #include "libblkid/include/blkid.h"
+@@ -2261,9 +2262,22 @@ bool TWPartition::Wipe_Encryption() {
+ 	if (!UnMount(true))
+ 		return false;
+ 	if (Is_Decrypted && !Decrypted_Block_Device.empty()) {
+-//		if (delete_crypto_blk_dev((char*)("userdata")) != 0) {
+-//			LOGERR("Error deleting crypto block device, continuing anyway.\n");
+-//		}
++		// The /data fstab entry may map userdata through a default-key dm
++		// device (inline-crypto devices). Destroy the mapping before
++		// formatting so make_f2fs can open the raw partition; fs_mgr
++		// recreates it when /data is next mounted.
++		std::string decrypted_name = Decrypted_Block_Device;
++		size_t sep = decrypted_name.rfind('/');
++		if (sep != std::string::npos)
++			decrypted_name = decrypted_name.substr(sep + 1);
++		if (!decrypted_name.empty()) {
++			std::string mapper_path = "/dev/block/mapper/" + decrypted_name;
++			if (access(mapper_path.c_str(), F_OK) == 0) {
++				if (!android::fs_mgr::DestroyLogicalPartition(decrypted_name)) {
++					LOGERR("Error deleting crypto block device %s, continuing anyway.\n", decrypted_name.c_str());
++				}
++			}
++		}
+ 	}
+ #endif
+ 	Has_Data_Media = false;
+diff --git a/partitionmanager.cpp b/partitionmanager.cpp
+index dc2db5fa..76c95c3a 100755
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -685,7 +685,16 @@ void TWPartitionManager::Decrypt_Data() {
+ 			Set_Crypto_Type("file");
+ #ifdef TW_INCLUDE_FBE_METADATA_DECRYPT
+ #ifdef USE_FSCRYPT
+-			if (android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, "", TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "")) {
++			bool metadata_decrypted = false;
++			for (int attempt = 0; attempt < 20; ++attempt) {
++				if (android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, "", TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "")) {
++					metadata_decrypted = true;
++					break;
++				}
++				LOGINFO("Metadata decrypt attempt %d failed; retrying...\n", attempt + 1);
++				usleep(500000);
++			}
++			if (metadata_decrypted) {
+ 				std::string crypto_blkdev = android::base::GetProperty("ro.crypto.fs_crypto_blkdev", "error");
+ 				Decrypt_Data->Decrypted_Block_Device = crypto_blkdev;
+ 				LOGINFO("Successfully decrypted metadata encrypted data partition with new block device: '%s'\n", crypto_blkdev.c_str());
+@@ -1969,8 +1978,12 @@ int TWPartitionManager::Format_Data(void) {
+ #endif
+ 			if (metadata != NULL)
+ 				metadata->Mount(true);
+-			if (!Check_Pending_Merges())
+-				return false;
++			if (!android::base::GetBoolProperty("of.skip_format_pending_merge", false)) {
++				if (!Check_Pending_Merges())
++					return false;
++			} else {
++				LOGINFO("Skipping pending-merge check before data format (of.skip_format_pending_merge).\n");
++			}
+ 		}
+ 		ret = dat->Wipe_Encryption();
+ 	} else {
+@@ -3236,6 +3249,15 @@ bool TWPartitionManager::Add_Remove_MTP_Storage(TWPartition* Part, int message_t
+ 				return true;
+ 			}
+ 		} else if (message_type == MTP_MESSAGE_ADD_STORAGE && Part->Is_Mounted()) {
++			// Ensure the MTP storage root exists. On FBE devices /data/media is
++			// not recreated by OrangeFox after formatting (data_media_fbe_msg),
++			// and without FUSE in recovery the directory may be absent, making
++			// MTP transfers fail with ENOENT. Create the physical directory so
++			// MTP can write; recovery reads it fine (no FUSE view here).
++			if (Part->Storage_Path == "/data/media") {
++				mkdir("/data/media", 0770);
++				TWFunc::Recursive_Mkdir("/data/media/0", false);
++			}
+ 			mtp_message.message_type = MTP_MESSAGE_ADD_STORAGE; // Add
+ 			mtp_message.storage_id = Part->MTP_Storage_ID;
+ 			string path = Part->Storage_Path;
+@@ -4698,14 +4720,16 @@ bool TWPartitionManager::Prepare_All_Super_Volumes() {
+ 	bool status = true;
+ 	std::vector<TWPartition*>::iterator iter;
+ 
+-	for (iter = Partitions.begin(); iter != Partitions.end(); iter++) {
++	for (iter = Partitions.begin(); iter != Partitions.end(); ) {
+ 		if ((*iter)->Is_Super) {
+ 			if (!Prepare_Super_Volume(*iter)) {
+ 				status = false;
+-				Partitions.erase(iter--);
++				iter = Partitions.erase(iter);
++				continue;
+ 			}
+ 			PartitionManager.Output_Partition(*iter);
+ 		}
++		iter++;
+ 	}
+ 	Update_System_Details();
+ 	return status;
+diff --git a/twrp-functions.cpp b/twrp-functions.cpp
+index fd46b07f..fb641abc 100755
+--- a/twrp-functions.cpp
++++ b/twrp-functions.cpp
+@@ -2566,6 +2566,33 @@ int TWFunc::Check_MIUI_Treble(void)
+   	  finger_print = TWFunc::File_Property_Get (orangefox_cfg, "ROM_FINGERPRINT");
+     }
+ 
++  // Prefer the device-codename fingerprint from vendor build.prop (the
++  // recovery prop may expose a generic alps value from a duplicate key).
++  bool vendor_mounted = TWFunc::Path_Exists("/vendor/build.prop");
++  if (!vendor_mounted) {
++    std::string slot = TWFunc::Fox_Property_Get("ro.boot.slot_suffix");
++    if (slot.empty()) slot = "_a";
++    TWFunc::Exec_Cmd("mkdir -p /vendor; mount -t erofs -o ro /dev/block/mapper/vendor" + slot + " /vendor 2>/dev/null");
++  }
++  if (TWFunc::Path_Exists("/vendor/build.prop")) {
++    std::ifstream vfp("/vendor/build.prop");
++    std::string line, dali_fp;
++    while (std::getline(vfp, line)) {
++      if (line.rfind("ro.vendor.build.fingerprint=", 0) == 0) {
++        std::string val = line.substr(28);
++        if (val.find("dali") != std::string::npos)
++          dali_fp = val; // keep the last dali-branded entry
++      }
++    }
++    if (!dali_fp.empty())
++      finger_print = dali_fp;
++    LOGINFO("dali-fp: vendor_build_prop=%d chosen=%s\n", TWFunc::Path_Exists("/vendor/build.prop"), finger_print.c_str());
++  } else {
++    LOGINFO("dali-fp: vendor/build.prop missing\n");
++  }
++  if (!vendor_mounted)
++    TWFunc::Exec_Cmd("umount /vendor 2>/dev/null");
++
+    // Treble ?
+    if (strncmp(fox_is_treble_rom_installed.c_str(), "1", 1) == 0)
+       Fox_Current_ROM_IsTreble = 1;
+@@ -2642,15 +2669,19 @@ int TWFunc::Check_MIUI_Treble(void)
+   rom_desc = GetInstalledRom();
+   if (!rom_desc.empty()) 
+     {  
+-  	if (fox_is_miui_rom_installed == "1" || TWFunc::Fox_Property_Get("orangefox.miui.rom") == "1")
+-     	  {
+-  	     Fox_Current_ROM_IsMIUI = 1;
+-  	     gui_msg(Msg("fox_miui_rom=* MIUI ROM (SDK:{1}, {2})")(rom_sdk)(sdknum_to_text(rom_sdk).c_str()));
+-          } 
+-  	else
+-     	  {
+-     	     gui_msg(Msg("fox_custom_rom=* Custom ROM (SDK:{1}, {2})")(rom_sdk)(sdknum_to_text(rom_sdk).c_str()));
+-    	  }
++  		{
++		std::string rom_label = "Custom ROM";
++		if (fox_is_miui_rom_installed == "1" || TWFunc::Fox_Property_Get("orangefox.miui.rom") == "1")
++		{
++			Fox_Current_ROM_IsMIUI = 1;
++			rom_label = "MIUI ROM";
++		}
++		// HyperOS 3 (Xiaomi OS3.x) recognition from the official fingerprint.
++		if (finger_print.find("OS3.") != std::string::npos ||
++		    incr_version.find("OS3.") != std::string::npos)
++			rom_label = "HyperOS 3 ROM";
++		gui_msg(Msg("fox_rom_label=* {1} (SDK:{2}, {3})")(rom_label)(rom_sdk)(sdknum_to_text(rom_sdk).c_str()));
++	}
+         gui_print("* %s\n", rom_desc.c_str());
+         
+         if (!incr_version.empty())
+@@ -4952,8 +4983,16 @@ string TWFunc::Fox_Property_Get(string Prop_Name) {
+ }
+ 
+ bool TWFunc::Fox_Property_Set(const std::string Prop_Name, const std::string Value) {
++  // Skip redundant writes to read-only properties that already carry the
++  // target value; bionic otherwise logs "Unable to set property ... 0xb".
++  if (Fox_Property_Get(Prop_Name) == Value)
++    return true;
+   usleep(2048);
+-  bool res = android::base::SetProperty(Prop_Name, Value);
++  // ro.* properties are read-only once set; attempt the change through the
++  // resetprop fallback directly to avoid the bionic error line.
++  bool res = false;
++  if (Prop_Name.rfind("ro.", 0) != 0)
++    res = android::base::SetProperty(Prop_Name, Value);
+   if (!res && Fox_Property_Get(Prop_Name) != Value) {
+     	usleep(1028);
+ 	string tmp = "\"";
+diff --git a/twrp.cpp b/twrp.cpp
+index c9fdc572..d07b7c5e 100644
+--- a/twrp.cpp
++++ b/twrp.cpp
+@@ -632,7 +632,23 @@ int main(int argc, char **argv) {
+ 	}
+ #ifndef FOX_ALLOW_EARLY_SETTINGS_LOAD
+ 	// Language
+-	PageManager::LoadLanguage(DataManager::GetStrValue("tw_language"));
++	std::string gui_language = DataManager::GetStrValue("tw_language");
++	// Dali: default to zh_CN whenever no explicit settings store exists yet.
++	if (gui_language.empty() || (gui_language == "en" && !TWFunc::Path_Exists(Fox_Settings_Path + "/.foxs")))
++		gui_language = "zh_CN";
++	// Dali: force UTC+8 (TAIST-8, DST off) when the store has no zone yet or
++	// still carries the stock OrangeFox CET default. The settings page keeps
++	// the four timezone values in sync, so set the GUI selection pair too.
++	{
++		std::string tz = DataManager::GetStrValue(TW_TIME_ZONE_VAR);
++		if (tz.empty() || tz == "CET-1;CEST,M3.5.0,M10.5.0") {
++			DataManager::SetValue(TW_TIME_ZONE_VAR, "TAIST-8");
++			DataManager::SetValue(TW_TIME_ZONE_GUISEL, "TAIST-8;TAIDT");
++			DataManager::SetValue(TW_TIME_ZONE_GUIOFFSET, "0");
++			DataManager::SetValue(TW_TIME_ZONE_GUIDST, "0");
++		}
++	}
++	PageManager::LoadLanguage(gui_language);
+ 	GUIConsole::Translate_Now();
+ #endif
+ 	// Fox extra setup
+diff --git a/twrpRepacker.cpp b/twrpRepacker.cpp
+index ca3f8243..fe210fce 100755
+--- a/twrpRepacker.cpp
++++ b/twrpRepacker.cpp
+@@ -19,7 +19,23 @@
+ 	along with TWRP.  If not, see <http://www.gnu.org/licenses/>.
+ */
+ 
++#include <algorithm>
++#include <array>
++#include <cerrno>
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++#include <dirent.h>
++#include <fcntl.h>
++#include <limits>
++#include <map>
+ #include <string>
++#include <sys/stat.h>
++#include <unistd.h>
++#include <vector>
++
++#include <libavb/libavb.h>
++#include <openssl/sha.h>
+ 
+ #include "data.hpp"
+ #include "partitions.hpp"
+@@ -125,6 +141,744 @@ static bool is_AB_for_repacker() {
+ 	return !slot.empty();
+ }
+ 
++#if defined(BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT) || defined(FOX_VENDOR_BOOT_RECOVERY)
++namespace {
++
++constexpr char kVendorBootPartitionName[] = "vendor_boot";
++constexpr size_t kHashChunkSize = 64 * 1024;
++
++struct VendorBootAvbInfo {
++	AvbFooter footer{};
++	std::vector<uint8_t> vbmeta;
++	size_t descriptor_offset = 0;
++	size_t salt_offset = 0;
++	size_t salt_size = 0;
++	size_t digest_offset = 0;
++	size_t digest_size = 0;
++	uint64_t descriptor_image_size = 0;
++};
++
++class ScopedRepackWorkdir {
++public:
++	explicit ScopedRepackWorkdir(const std::string& path) : path_(path) {}
++	~ScopedRepackWorkdir() {
++		if (TWFunc::Path_Exists(path_))
++			TWFunc::removeDir(path_, false);
++	}
++
++private:
++	std::string path_;
++};
++
++static bool ReadFullyAt(int fd, void* buffer, size_t size, uint64_t offset) {
++	if (offset > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) ||
++		size > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) - offset)
++		return false;
++
++	uint8_t* cursor = static_cast<uint8_t*>(buffer);
++	size_t done = 0;
++	while (done < size) {
++		ssize_t read_size = pread(fd, cursor + done, size - done, static_cast<off_t>(offset + done));
++		if (read_size < 0) {
++			if (errno == EINTR)
++				continue;
++			return false;
++		}
++		if (read_size == 0)
++			return false;
++		done += static_cast<size_t>(read_size);
++	}
++	return true;
++}
++
++static bool WriteFullyAt(int fd, const void* buffer, size_t size, uint64_t offset) {
++	if (offset > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) ||
++		size > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) - offset)
++		return false;
++
++	const uint8_t* cursor = static_cast<const uint8_t*>(buffer);
++	size_t done = 0;
++	while (done < size) {
++		ssize_t write_size = pwrite(fd, cursor + done, size - done, static_cast<off_t>(offset + done));
++		if (write_size < 0) {
++			if (errno == EINTR)
++				continue;
++			return false;
++		}
++		if (write_size == 0)
++			return false;
++		done += static_cast<size_t>(write_size);
++	}
++	return true;
++}
++
++static bool ReadVendorBootAvb(const std::string& image, uint64_t expected_size, VendorBootAvbInfo* info) {
++	struct stat st {};
++	if (stat(image.c_str(), &st) != 0 || st.st_size < static_cast<off_t>(AVB_FOOTER_SIZE) ||
++		static_cast<uint64_t>(st.st_size) != expected_size)
++		return false;
++
++	int fd = open(image.c_str(), O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++
++	AvbFooter raw_footer{};
++	bool result = ReadFullyAt(fd, &raw_footer, sizeof(raw_footer), expected_size - AVB_FOOTER_SIZE);
++	close(fd);
++	if (!result || !avb_footer_validate_and_byteswap(&raw_footer, &info->footer))
++		return false;
++
++	if (info->footer.original_image_size == 0 ||
++		info->footer.original_image_size > info->footer.vbmeta_offset ||
++		info->footer.vbmeta_offset > expected_size - AVB_FOOTER_SIZE ||
++		info->footer.vbmeta_size > expected_size - AVB_FOOTER_SIZE - info->footer.vbmeta_offset ||
++		info->footer.vbmeta_size > std::numeric_limits<size_t>::max())
++		return false;
++
++	if (info->footer.vbmeta_size < AVB_VBMETA_IMAGE_HEADER_SIZE)
++		return false;
++
++	info->vbmeta.resize(static_cast<size_t>(info->footer.vbmeta_size));
++	fd = open(image.c_str(), O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++	result = ReadFullyAt(fd, info->vbmeta.data(), info->vbmeta.size(), info->footer.vbmeta_offset);
++	close(fd);
++	if (!result)
++		return false;
++	const AvbVBMetaVerifyResult verify_result =
++		avb_vbmeta_image_verify(info->vbmeta.data(), info->vbmeta.size(), nullptr, nullptr);
++	if (verify_result != AVB_VBMETA_VERIFY_RESULT_OK_NOT_SIGNED) {
++		LOGERR("Vendor_boot AVB must use Algorithm NONE for fragment reflash (got %s)\n",
++			avb_vbmeta_verify_result_to_string(verify_result));
++		return false;
++	}
++
++	AvbVBMetaImageHeader header{};
++	avb_vbmeta_image_header_to_host_byte_order(
++		reinterpret_cast<const AvbVBMetaImageHeader*>(info->vbmeta.data()), &header);
++	if (header.algorithm_type != AVB_ALGORITHM_TYPE_NONE ||
++		header.authentication_data_block_size > info->vbmeta.size() - AVB_VBMETA_IMAGE_HEADER_SIZE ||
++		header.auxiliary_data_block_size > info->vbmeta.size() - AVB_VBMETA_IMAGE_HEADER_SIZE - header.authentication_data_block_size ||
++		header.descriptors_offset > header.auxiliary_data_block_size ||
++		header.descriptors_size > header.auxiliary_data_block_size - header.descriptors_offset)
++		return false;
++
++	const size_t auxiliary_start = AVB_VBMETA_IMAGE_HEADER_SIZE +
++		static_cast<size_t>(header.authentication_data_block_size);
++	if (header.descriptors_offset > info->vbmeta.size() - auxiliary_start)
++		return false;
++	const size_t descriptors_start = auxiliary_start + static_cast<size_t>(header.descriptors_offset);
++	if (header.descriptors_size > info->vbmeta.size() - descriptors_start)
++		return false;
++
++	size_t cursor = descriptors_start;
++	const size_t end = cursor + static_cast<size_t>(header.descriptors_size);
++	int matches = 0;
++	while (cursor < end) {
++		if (end - cursor < sizeof(AvbDescriptor))
++			return false;
++
++		const auto* raw_descriptor = reinterpret_cast<const AvbDescriptor*>(info->vbmeta.data() + cursor);
++		AvbDescriptor descriptor{};
++		if (!avb_descriptor_validate_and_byteswap(raw_descriptor, &descriptor) ||
++			descriptor.num_bytes_following > end - cursor - sizeof(AvbDescriptor))
++			return false;
++
++		const size_t descriptor_size = sizeof(AvbDescriptor) + static_cast<size_t>(descriptor.num_bytes_following);
++		if (descriptor.tag == AVB_DESCRIPTOR_TAG_HASH) {
++			if (descriptor_size < sizeof(AvbHashDescriptor))
++				return false;
++
++			const auto* raw_hash = reinterpret_cast<const AvbHashDescriptor*>(raw_descriptor);
++			AvbHashDescriptor hash{};
++			if (!avb_hash_descriptor_validate_and_byteswap(raw_hash, &hash))
++				return false;
++
++			const uint64_t variable_size = static_cast<uint64_t>(hash.partition_name_len) + hash.salt_len + hash.digest_len;
++			if (variable_size > descriptor_size - sizeof(AvbHashDescriptor))
++				return false;
++
++			const uint8_t* partition_name = info->vbmeta.data() + cursor + sizeof(AvbHashDescriptor);
++			if (hash.partition_name_len == sizeof(kVendorBootPartitionName) - 1 &&
++				std::memcmp(partition_name, kVendorBootPartitionName, sizeof(kVendorBootPartitionName) - 1) == 0) {
++				const bool canonical_sha256 = std::memcmp(hash.hash_algorithm, "sha256", 6) == 0 &&
++					std::all_of(hash.hash_algorithm + 6, hash.hash_algorithm + sizeof(hash.hash_algorithm),
++						[](uint8_t value) { return value == 0; });
++				if (!canonical_sha256 || hash.digest_len != SHA256_DIGEST_LENGTH || ++matches != 1)
++					return false;
++				info->descriptor_offset = cursor;
++				info->salt_offset = cursor + sizeof(AvbHashDescriptor) + hash.partition_name_len;
++				info->salt_size = hash.salt_len;
++				info->digest_offset = info->salt_offset + hash.salt_len;
++				info->digest_size = hash.digest_len;
++				info->descriptor_image_size = hash.image_size;
++			}
++		}
++
++		cursor += descriptor_size;
++	}
++	return cursor == end && matches == 1;
++}
++
++static bool CalculateVendorBootDigest(const std::string& image, const VendorBootAvbInfo& info,
++		std::array<uint8_t, SHA256_DIGEST_LENGTH>* digest) {
++	int fd = open(image.c_str(), O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++
++	SHA256_CTX context{};
++	bool result = SHA256_Init(&context) == 1 &&
++		SHA256_Update(&context, info.vbmeta.data() + info.salt_offset, info.salt_size) == 1;
++	std::array<uint8_t, kHashChunkSize> buffer{};
++	uint64_t offset = 0;
++	while (result && offset < info.footer.original_image_size) {
++		size_t to_read = static_cast<size_t>(std::min<uint64_t>(buffer.size(), info.footer.original_image_size - offset));
++		result = ReadFullyAt(fd, buffer.data(), to_read, offset) && SHA256_Update(&context, buffer.data(), to_read) == 1;
++		offset += to_read;
++	}
++	if (result)
++		result = SHA256_Final(digest->data(), &context) == 1;
++	close(fd);
++	return result;
++}
++
++static bool VerifyVendorBootAvb(const std::string& image, uint64_t expected_size) {
++	VendorBootAvbInfo info;
++	std::array<uint8_t, SHA256_DIGEST_LENGTH> digest{};
++	return ReadVendorBootAvb(image, expected_size, &info) &&
++		info.descriptor_image_size == info.footer.original_image_size &&
++		CalculateVendorBootDigest(image, info, &digest) &&
++		std::memcmp(digest.data(), info.vbmeta.data() + info.digest_offset, digest.size()) == 0;
++}
++
++static bool RepairVendorBootAvb(const std::string& image, uint64_t expected_size) {
++	VendorBootAvbInfo info;
++	std::array<uint8_t, SHA256_DIGEST_LENGTH> digest{};
++	if (!ReadVendorBootAvb(image, expected_size, &info) || !CalculateVendorBootDigest(image, info, &digest))
++		return false;
++
++	const uint64_t serialized_size = avb_htobe64(info.footer.original_image_size);
++	std::memcpy(info.vbmeta.data() + info.descriptor_offset + offsetof(AvbHashDescriptor, image_size),
++		&serialized_size, sizeof(serialized_size));
++	std::memcpy(info.vbmeta.data() + info.digest_offset, digest.data(), digest.size());
++
++	int fd = open(image.c_str(), O_WRONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++	bool result = WriteFullyAt(fd, info.vbmeta.data(), info.vbmeta.size(), info.footer.vbmeta_offset) && fsync(fd) == 0;
++	close(fd);
++	return result && VerifyVendorBootAvb(image, expected_size);
++}
++
++static std::string ShellQuote(const std::string& value) {
++	std::string quoted("'");
++	for (char character : value) {
++		if (character == '\'')
++			quoted += "'\\''";
++		else
++			quoted += character;
++	}
++	return quoted + "'";
++}
++
++static bool CompareFiles(const std::string& first, const std::string& second) {
++	return TWFunc::Exec_Cmd("/system/bin/cmp -s " + ShellQuote(first) + " " + ShellQuote(second), false) == 0;
++}
++
++static bool CompareOptionalFile(const std::string& first, const std::string& second) {
++	const bool first_exists = TWFunc::Path_Exists(first);
++	return first_exists == TWFunc::Path_Exists(second) && (!first_exists || CompareFiles(first, second));
++}
++
++static bool ListVendorRamdisks(const std::string& directory, std::vector<std::string>* files) {
++	DIR* handle = opendir(directory.c_str());
++	if (!handle)
++		return false;
++
++	files->clear();
++	while (dirent* entry = readdir(handle)) {
++		const std::string name(entry->d_name);
++		if (name.size() >= 20 && name.compare(0, 15, "vendor_ramdisk_") == 0 &&
++			name.compare(name.size() - 5, 5, ".cpio") == 0)
++			files->push_back(name);
++	}
++	closedir(handle);
++	std::sort(files->begin(), files->end());
++	return !files->empty();
++}
++
++static bool CompareRetainedVendorRamdisks(const std::string& original, const std::string& rebuilt) {
++	std::vector<std::string> original_files;
++	std::vector<std::string> rebuilt_files;
++	if (!ListVendorRamdisks(original, &original_files) || !ListVendorRamdisks(rebuilt, &rebuilt_files) ||
++		original_files != rebuilt_files)
++		return false;
++
++	for (const std::string& name : original_files) {
++		if (name != "vendor_ramdisk_recovery.cpio" && !CompareFiles(original + "/" + name, rebuilt + "/" + name))
++			return false;
++	}
++	return true;
++}
++
++constexpr char kVendorBootMagic[] = "VNDRBOOT";
++constexpr size_t kVendorBootHeaderPrefixSize = 28;
++constexpr size_t kVendorBootHeaderVersionOffset = 8;
++constexpr size_t kVendorBootPageSizeOffset = 12;
++constexpr size_t kVendorBootRamdiskSizeOffset = 24;
++
++struct VendorBootRamdiskLayout {
++	uint32_t page_size = 0;
++	uint64_t payload_size = 0;
++};
++
++enum class CpioEntryKind {
++	kDirectory,
++	kFile,
++	kSymlink,
++};
++
++using CpioEntries = std::map<std::string, CpioEntryKind>;
++
++static bool GetRegularFileSize(const std::string& path, uint64_t* size) {
++	struct stat st {};
++	if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0)
++		return false;
++	*size = static_cast<uint64_t>(st.st_size);
++	return true;
++}
++
++static uint32_t ReadLittleEndian32(const uint8_t* value) {
++	return static_cast<uint32_t>(value[0]) |
++		(static_cast<uint32_t>(value[1]) << 8) |
++		(static_cast<uint32_t>(value[2]) << 16) |
++		(static_cast<uint32_t>(value[3]) << 24);
++}
++
++static bool IsPowerOfTwo(uint32_t value) {
++	return value != 0 && (value & (value - 1)) == 0;
++}
++
++static bool AlignUp(uint64_t value, uint32_t alignment, uint64_t* aligned) {
++	if (!IsPowerOfTwo(alignment))
++		return false;
++	const uint64_t padding = (static_cast<uint64_t>(alignment) - (value & (alignment - 1))) & (alignment - 1);
++	if (value > std::numeric_limits<uint64_t>::max() - padding)
++		return false;
++	*aligned = value + padding;
++	return true;
++}
++
++static bool ReadVendorBootRamdiskLayout(const std::string& image, const std::string& directory,
++		VendorBootRamdiskLayout* layout) {
++	std::array<uint8_t, kVendorBootHeaderPrefixSize> header{};
++	int fd = open(image.c_str(), O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++	const bool read_ok = ReadFullyAt(fd, header.data(), header.size(), 0);
++	close(fd);
++	if (!read_ok || std::memcmp(header.data(), kVendorBootMagic, sizeof(kVendorBootMagic) - 1) != 0 ||
++		ReadLittleEndian32(header.data() + kVendorBootHeaderVersionOffset) != 4)
++		return false;
++
++	const uint32_t page_size = ReadLittleEndian32(header.data() + kVendorBootPageSizeOffset);
++	if (page_size < 2048 || page_size > 16384 || !IsPowerOfTwo(page_size))
++		return false;
++	const uint64_t declared_size = ReadLittleEndian32(header.data() + kVendorBootRamdiskSizeOffset);
++
++	std::vector<std::string> ramdisks;
++	if (!ListVendorRamdisks(directory, &ramdisks))
++		return false;
++	uint64_t measured_size = 0;
++	for (const std::string& name : ramdisks) {
++		uint64_t size = 0;
++		if (!GetRegularFileSize(directory + "/" + name, &size) ||
++			size > std::numeric_limits<uint64_t>::max() - measured_size)
++			return false;
++		measured_size += size;
++	}
++	if (measured_size != declared_size)
++		return false;
++
++	layout->page_size = page_size;
++	layout->payload_size = measured_size;
++	return true;
++}
++
++static bool CanDirectlyReplaceRecoveryFragment(const VendorBootAvbInfo& avb, const std::string& image,
++		const std::string& directory, const std::string& inactive_recovery, const std::string& source_recovery,
++		bool* fits) {
++	VendorBootRamdiskLayout layout;
++	uint64_t inactive_recovery_size = 0;
++	uint64_t source_recovery_size = 0;
++	if (!ReadVendorBootRamdiskLayout(image, directory, &layout) ||
++		!GetRegularFileSize(inactive_recovery, &inactive_recovery_size) ||
++		!GetRegularFileSize(source_recovery, &source_recovery_size) ||
++		layout.payload_size < inactive_recovery_size)
++		return false;
++
++	uint64_t replacement_payload_size = layout.payload_size - inactive_recovery_size;
++	if (source_recovery_size > std::numeric_limits<uint64_t>::max() - replacement_payload_size)
++		return false;
++	replacement_payload_size += source_recovery_size;
++
++	uint64_t original_padded_size = 0;
++	uint64_t replacement_padded_size = 0;
++	if (!AlignUp(layout.payload_size, layout.page_size, &original_padded_size) ||
++		!AlignUp(replacement_payload_size, layout.page_size, &replacement_padded_size))
++		return false;
++
++	uint64_t predicted_preavb_size = avb.footer.original_image_size;
++	if (replacement_padded_size >= original_padded_size) {
++		const uint64_t growth = replacement_padded_size - original_padded_size;
++		if (growth > std::numeric_limits<uint64_t>::max() - predicted_preavb_size)
++			return false;
++		predicted_preavb_size += growth;
++	} else {
++		const uint64_t shrink = original_padded_size - replacement_padded_size;
++		if (shrink > predicted_preavb_size)
++			return false;
++		predicted_preavb_size -= shrink;
++	}
++
++	*fits = predicted_preavb_size <= avb.footer.vbmeta_offset;
++	return true;
++}
++
++static bool IsSafeCpioPath(const std::string& path) {
++	if (path.empty() || path.front() == '/' || path.back() == '/')
++		return false;
++	for (size_t start = 0; start < path.size();) {
++		const size_t slash = path.find('/', start);
++		const size_t end = slash == std::string::npos ? path.size() : slash;
++		if (end == start)
++			return false;
++		const std::string component = path.substr(start, end - start);
++		if (component == "." || component == "..")
++			return false;
++		for (char character : component) {
++			const bool allowed = (character >= 'a' && character <= 'z') ||
++				(character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') ||
++				character == '.' || character == '_' || character == '-' || character == '+' ||
++				character == '=' || character == '@' || character == '[' || character == ']';
++			if (!allowed)
++				return false;
++		}
++		if (slash == std::string::npos)
++			break;
++		start = slash + 1;
++	}
++	return true;
++}
++
++static bool ParseCpioEntries(const std::string& listing, CpioEntries* entries) {
++	entries->clear();
++	for (size_t start = 0; start < listing.size();) {
++		const size_t newline = listing.find('\n', start);
++		std::string line = listing.substr(start, newline == std::string::npos ? std::string::npos : newline - start);
++		if (!line.empty() && line.back() == '\r')
++			line.pop_back();
++		if (!line.empty()) {
++			const size_t first_tab = line.find('\t');
++			const size_t last_tab = line.rfind('\t');
++			if (first_tab == std::string::npos || last_tab == std::string::npos || first_tab == 0 || last_tab + 1 >= line.size())
++				return false;
++			CpioEntryKind kind;
++			switch (line.front()) {
++			case 'd': kind = CpioEntryKind::kDirectory; break;
++			case '-': kind = CpioEntryKind::kFile; break;
++			case 'l': kind = CpioEntryKind::kSymlink; break;
++			default: return false;
++			}
++			const std::string path = line.substr(last_tab + 1);
++			if (!IsSafeCpioPath(path) || !entries->emplace(path, kind).second)
++				return false;
++		}
++		if (newline == std::string::npos)
++			break;
++		start = newline + 1;
++	}
++	return !entries->empty();
++}
++
++static bool ListCpioEntries(const std::string& magiskboot, const std::string& cpio, CpioEntries* entries) {
++	std::string listing;
++	if (TWFunc::Exec_Cmd(ShellQuote(magiskboot) + " cpio " + ShellQuote(cpio) + " " +
++			ShellQuote("ls -r /"), listing) != 0)
++		return false;
++	return ParseCpioEntries(listing, entries);
++}
++
++static bool HasNonDirectoryAncestor(const CpioEntries& entries, const std::string& path) {
++	for (size_t slash = path.find('/'); slash != std::string::npos; slash = path.find('/', slash + 1)) {
++		const auto found = entries.find(path.substr(0, slash));
++		if (found != entries.end() && found->second != CpioEntryKind::kDirectory)
++			return true;
++	}
++	return false;
++}
++
++static bool VerifyCpioOverlay(const CpioEntries& platform, const CpioEntries& recovery) {
++	for (const auto& recovery_entry : recovery) {
++		const std::string& path = recovery_entry.first;
++		if (HasNonDirectoryAncestor(platform, path))
++			return false;
++		const auto platform_entry = platform.find(path);
++		if (recovery_entry.second == CpioEntryKind::kDirectory) {
++			if (platform_entry != platform.end() && platform_entry->second != CpioEntryKind::kDirectory)
++				return false;
++		} else if (platform_entry != platform.end()) {
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool TrimPlatformFragment(const std::string& magiskboot, const std::string& platform_cpio,
++		const std::string& recovery_cpio) {
++	CpioEntries platform_entries;
++	CpioEntries recovery_entries;
++	if (!ListCpioEntries(magiskboot, platform_cpio, &platform_entries) ||
++		!ListCpioEntries(magiskboot, recovery_cpio, &recovery_entries))
++		return false;
++
++	std::vector<std::string> removals;
++	for (const auto& recovery_entry : recovery_entries) {
++		const std::string& path = recovery_entry.first;
++		if (HasNonDirectoryAncestor(platform_entries, path)) {
++			LOGERR("Unsafe platform CPIO ancestor for Recovery path '%s'\n", path.c_str());
++			return false;
++		}
++		const auto platform_entry = platform_entries.find(path);
++		if (platform_entry == platform_entries.end())
++			continue;
++		if (recovery_entry.second == CpioEntryKind::kDirectory) {
++			if (platform_entry->second != CpioEntryKind::kDirectory) {
++				LOGERR("Unsafe platform CPIO type conflict at '%s'\n", path.c_str());
++				return false;
++			}
++			continue;
++		}
++		removals.push_back((platform_entry->second == CpioEntryKind::kDirectory ? "rm -r " : "rm ") + path);
++	}
++
++	std::string command = ShellQuote(magiskboot) + " cpio " + ShellQuote(platform_cpio);
++	for (const std::string& removal : removals) {
++		if (command.size() > 65536 - removal.size() - 3) {
++			LOGERR("Too many platform CPIO entries to trim safely\n");
++			return false;
++		}
++		command += " " + ShellQuote(removal);
++	}
++	if (!removals.empty() && TWFunc::Exec_Cmd(command, false) != 0)
++		return false;
++
++	CpioEntries trimmed_entries;
++	return ListCpioEntries(magiskboot, platform_cpio, &trimmed_entries) &&
++		VerifyCpioOverlay(trimmed_entries, recovery_entries);
++}
++
++static bool IsUncompressedCpio(const std::string& path) {
++	std::array<char, 6> magic{};
++	int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++	const bool read_ok = ReadFullyAt(fd, magic.data(), magic.size(), 0);
++	close(fd);
++	return read_ok && (std::memcmp(magic.data(), "070701", magic.size()) == 0 ||
++		std::memcmp(magic.data(), "070702", magic.size()) == 0);
++}
++
++static bool MakeUncompressedCpio(const std::string& magiskboot, const std::string& input, const std::string& output) {
++	if (IsUncompressedCpio(input))
++		return TWFunc::copy_file(input, output, 0644, false) == 0;
++	return TWFunc::Exec_Cmd(ShellQuote(magiskboot) + " decompress " + ShellQuote(input) + " " +
++		ShellQuote(output), false) == 0 && IsUncompressedCpio(output);
++}
++
++static bool FlashCurrentVendorBootRecoveryFragment(TWPartition* target_partition, const std::string& slot) {
++	if (!target_partition || !TWFunc::Path_Exists(TWFunc::Get_MagiskBoot())) {
++		LOGERR("Vendor_boot fragment reflash prerequisites are unavailable\n");
++		return false;
++	}
++
++	std::string active_suffix;
++	std::string inactive_suffix;
++	if (slot == "_a" || slot == "a") {
++		active_suffix = "_a";
++		inactive_suffix = "_b";
++	} else if (slot == "_b" || slot == "b") {
++		active_suffix = "_b";
++		inactive_suffix = "_a";
++	} else {
++		LOGERR("Unsupported active slot '%s' for /vendor_boot\n", slot.c_str());
++		return false;
++	}
++
++	const std::string& source = target_partition->Actual_Block_Device;
++	if (source.size() <= active_suffix.size() ||
++		source.compare(source.size() - active_suffix.size(), active_suffix.size(), active_suffix) != 0) {
++		LOGERR("Active vendor_boot block device '%s' does not match slot '%s'\n", source.c_str(), slot.c_str());
++		return false;
++	}
++
++	const std::string destination = source.substr(0, source.size() - active_suffix.size()) + inactive_suffix;
++	if (!TWFunc::Path_Exists(source) || !TWFunc::Path_Exists(destination)) {
++		LOGERR("Unable to access vendor_boot slot devices '%s' and '%s'\n", source.c_str(), destination.c_str());
++		return false;
++	}
++
++	const uint64_t destination_size = TWFunc::IOCTL_Get_Block_Size(destination.c_str());
++	if (destination_size == 0) {
++		LOGERR("Unable to determine inactive vendor_boot size\n");
++		return false;
++	}
++
++	const std::string workdir = "/tmp/fox-vendor-boot-reflash";
++	if (TWFunc::Path_Exists(workdir) && TWFunc::removeDir(workdir, false) != 0) {
++		LOGERR("Unable to clear the vendor_boot reflash work directory\n");
++		return false;
++	}
++	if (!TWFunc::Recursive_Mkdir(workdir))
++		return false;
++	ScopedRepackWorkdir cleanup(workdir);
++
++	const std::string source_dir = workdir + "/source";
++	const std::string inactive_dir = workdir + "/inactive";
++	const std::string verify_dir = workdir + "/verify";
++	if (!TWFunc::Recursive_Mkdir(source_dir) || !TWFunc::Recursive_Mkdir(inactive_dir) || !TWFunc::Recursive_Mkdir(verify_dir))
++		return false;
++
++	gui_print("Preparing the inactive vendor_boot recovery fragment...\n");
++	const std::string magiskboot = TWFunc::Get_MagiskBoot();
++	if (TWFunc::Exec_Cmd("cd " + ShellQuote(source_dir) + " && " + ShellQuote(magiskboot) +
++			" unpack --vendor -n -h " + ShellQuote(source), false) != 0)
++		return false;
++
++	const std::string source_recovery = source_dir + "/vendor_ramdisk_recovery.cpio";
++	if (!TWFunc::Path_Exists(source_recovery)) {
++		LOGERR("Active vendor_boot has no recovery ramdisk fragment\n");
++		return false;
++	}
++
++	const std::string inactive_image = inactive_dir + "/vendor_boot.img";
++	if (TWFunc::Exec_Cmd("dd bs=1048576 if=" + ShellQuote(destination) + " of=" + ShellQuote(inactive_image) + " conv=fsync", false) != 0 ||
++		TWFunc::Exec_Cmd("cd " + ShellQuote(inactive_dir) + " && " + ShellQuote(magiskboot) +
++			" unpack --vendor -n -h vendor_boot.img", false) != 0)
++		return false;
++
++	const std::string inactive_recovery = inactive_dir + "/vendor_ramdisk_recovery.cpio";
++	const std::string inactive_dtb = inactive_dir + "/dtb";
++	if (!TWFunc::Path_Exists(inactive_recovery) || !TWFunc::Path_Exists(inactive_dtb))
++		return false;
++
++	VendorBootAvbInfo inactive_avb;
++	bool direct_repack_fits = false;
++	if (!ReadVendorBootAvb(inactive_image, destination_size, &inactive_avb) ||
++		!CanDirectlyReplaceRecoveryFragment(inactive_avb, inactive_image, inactive_dir, inactive_recovery,
++			source_recovery, &direct_repack_fits)) {
++		LOGERR("Unable to calculate inactive vendor_boot capacity safely\n");
++		gui_print("Unable to validate inactive vendor_boot capacity; no partition was written.\n");
++		return false;
++	}
++
++	DataManager::SetProgress(.35);
++	const std::string rebuilt_image = workdir + "/new-vendor_boot.img";
++	std::string expected_dir = inactive_dir;
++	std::string expected_recovery = source_recovery;
++	std::string expected_dtb = inactive_dtb;
++	bool verify_uncompressed = false;
++	if (direct_repack_fits) {
++		if (TWFunc::copy_file(source_recovery, inactive_recovery, 0644, false) != 0 ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(inactive_dir) + " && " + ShellQuote(magiskboot) +
++				" repack -n vendor_boot.img " + ShellQuote(rebuilt_image), false) != 0)
++			return false;
++	} else {
++		// Safe trim: remove from the inactive platform only entries that are
++		// byte-identical in the slot's own official recovery fragment. This
++		// frees the space needed for the ramdisk-backed OrangeFox fragment
++		// while keeping normal-boot platform files (sepolicy, ueventd, init,
++		// fstab) intact.
++		gui_print("Trimming only inactive platform entries duplicated by the official Recovery fragment...\n");
++		const std::string trim_dir = workdir + "/trim";
++		const std::string source_recovery_raw = workdir + "/source-recovery.cpio";
++		if (!TWFunc::Recursive_Mkdir(trim_dir) ||
++			!MakeUncompressedCpio(magiskboot, source_recovery, source_recovery_raw) ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(trim_dir) + " && " + ShellQuote(magiskboot) +
++				" unpack --vendor -h " + ShellQuote(inactive_image), false) != 0)
++			return false;
++
++		const std::string trim_platform = trim_dir + "/vendor_ramdisk_.cpio";
++		const std::string trim_recovery_official = trim_dir + "/vendor_ramdisk_recovery.cpio";
++		const std::string trim_dtb = trim_dir + "/dtb";
++		if (!TWFunc::Path_Exists(trim_platform) || !TWFunc::Path_Exists(trim_recovery_official) || !TWFunc::Path_Exists(trim_dtb) ||
++			TWFunc::Exec_Cmd(ShellQuote("/system/bin/sh") + " " + ShellQuote("/system/bin/dali-safe-trim.sh") +
++				" " + ShellQuote(magiskboot) + " " + ShellQuote(trim_platform) + " " + ShellQuote(trim_recovery_official), false) != 0 ||
++			TWFunc::copy_file(source_recovery_raw, trim_recovery_official, 0644, false) != 0) {
++			LOGERR("Unable to safe-trim the inactive platform fragment\n");
++			gui_print("Unable to safe-trim the inactive platform fragment safely; no partition was written.\n");
++			return false;
++		}
++
++		const std::string repack_dir = trim_dir + "/gzip";
++		const std::string repack_platform = repack_dir + "/vendor_ramdisk_.cpio";
++		const std::string repack_recovery = repack_dir + "/vendor_ramdisk_recovery.cpio";
++		if (!TWFunc::Recursive_Mkdir(repack_dir) ||
++			TWFunc::copy_file(trim_platform, repack_platform, 0644, false) != 0 ||
++			TWFunc::copy_file(trim_recovery_official, repack_recovery, 0644, false) != 0 ||
++			TWFunc::copy_file(trim_dtb, repack_dir + "/dtb", 0644, false) != 0 ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(repack_dir) +
++				" && /system/bin/gzip -c vendor_ramdisk_.cpio > vendor_ramdisk_.cpio.gz" +
++				" && mv -f vendor_ramdisk_.cpio.gz vendor_ramdisk_.cpio" +
++				" && /system/bin/gzip -c vendor_ramdisk_recovery.cpio > vendor_ramdisk_recovery.cpio.gz" +
++				" && mv -f vendor_ramdisk_recovery.cpio.gz vendor_ramdisk_recovery.cpio", false) != 0 ||
++			TWFunc::Exec_Cmd("cd " + ShellQuote(repack_dir) + " && " + ShellQuote(magiskboot) +
++				" repack " + ShellQuote(inactive_image) + " " + ShellQuote(rebuilt_image), false) != 0) {
++			LOGERR("Unable to safe-trim and rebuild the inactive vendor_boot\n");
++			gui_print("Unable to safe-trim and rebuild the inactive vendor_boot; no partition was written.\n");
++			return false;
++		}
++		expected_dir = trim_dir;
++		expected_recovery = source_recovery_raw;
++		expected_dtb = trim_dtb;
++		verify_uncompressed = true;
++	}
++
++	if (!TWFunc::Path_Exists(rebuilt_image) || !RepairVendorBootAvb(rebuilt_image, destination_size)) {
++		LOGERR("Unable to repair and verify the inactive vendor_boot AVB footer\n");
++		gui_print("Unable to verify the inactive vendor_boot AVB footer; no partition was written.\n");
++		return false;
++	}
++
++	const std::string unpack_option = verify_uncompressed ? " unpack --vendor -h " : " unpack --vendor -n -h ";
++	if (TWFunc::Exec_Cmd("cd " + ShellQuote(verify_dir) + " && " + ShellQuote(magiskboot) + unpack_option +
++			ShellQuote(rebuilt_image), false) != 0 ||
++		!CompareRetainedVendorRamdisks(expected_dir, verify_dir) ||
++		!CompareFiles(expected_dtb, verify_dir + "/dtb") ||
++		!CompareFiles(expected_recovery, verify_dir + "/vendor_ramdisk_recovery.cpio") ||
++		!CompareOptionalFile(expected_dir + "/vendor_bootconfig", verify_dir + "/vendor_bootconfig")) {
++		LOGERR("Rebuilt vendor_boot did not preserve the selected target fragments\n");
++		return false;
++	}
++
++	DataManager::SetProgress(.75);
++	PartitionManager.Unlock_Block_Partitions();
++	const std::string flash_command = "dd bs=1048576 if=" + ShellQuote(rebuilt_image) + " of=" + ShellQuote(destination) + " conv=fsync";
++	LOGINFO("Command=%s\n", flash_command.c_str());
++	if (TWFunc::Exec_Cmd(flash_command, false) != 0 || !CompareFiles(rebuilt_image, destination)) {
++		LOGERR("Failed to verify the inactive vendor_boot recovery fragment flash\n");
++		return false;
++	}
++
++	DataManager::SetProgress(1);
++	gui_print("Finished flashing the vendor_boot recovery fragment\n\n");
++	return true;
++}
++
++} // namespace
++#endif
++
+ bool twrpRepacker::Repack_Image_And_Flash(const std::string& Target_Image, const struct Repack_Options_struct& Repack_Options) {
+ 	if (!TWFunc::Path_Exists(TWFunc::Get_MagiskBoot())) {
+ 		LOGERR("Image repacking tool not present in this TWRP build!");
+@@ -333,22 +1087,44 @@ bool twrpRepacker::Flash_Current_Twrp() {
+ 		dest_partition = "/vendor_boot";
+ 	#endif
+ 
+-	if (!slot.empty() && PartitionManager.Find_Partition_By_Path(dest_partition)) {
+-		std::string root, src, dest;
+-		root = "/dev/block/bootdevice/by-name" + dest_partition;
++	TWPartition* target_partition = PartitionManager.Find_Partition_By_Path(dest_partition);
++#if defined(FOX_VENDOR_BOOT_RECOVERY) || defined(BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT)
++	if (slot.empty() || !target_partition) {
++		LOGERR("Unable to locate the active %s slot\n", dest_partition.c_str());
++		return false;
++	}
++	return FlashCurrentVendorBootRecoveryFragment(target_partition, slot);
++#endif
++	if (!slot.empty() && target_partition) {
++		std::string active_suffix, inactive_suffix;
+ 		if (slot == "_a" || slot == "a") {
+-			src = root + "_a";
+-			dest= root + "_b";
++			active_suffix = "_a";
++			inactive_suffix = "_b";
++		} else if (slot == "_b" || slot == "b") {
++			active_suffix = "_b";
++			inactive_suffix = "_a";
++		} else {
++			LOGERR("Unsupported active slot '%s' for %s\n", slot.c_str(), dest_partition.c_str());
++			return false;
+ 		}
+-		else {
+-			src = root + "_b";
+-			dest= root + "_a";
++
++		const std::string& src = target_partition->Actual_Block_Device;
++		if (src.size() <= active_suffix.size() ||
++			src.compare(src.size() - active_suffix.size(), active_suffix.size(), active_suffix) != 0) {
++			LOGERR("Active block device '%s' does not match slot '%s'\n", src.c_str(), slot.c_str());
++			return false;
++		}
++
++		std::string dest = src.substr(0, src.size() - active_suffix.size()) + inactive_suffix;
++		if (!TWFunc::Path_Exists(src) || !TWFunc::Path_Exists(dest)) {
++			LOGERR("Unable to access %s slot devices '%s' and '%s'\n", dest_partition.c_str(), src.c_str(), dest.c_str());
++			return false;
+ 		}
+ 		PartitionManager.Unlock_Block_Partitions();
+ 
+ 		// only copy the relevant active slot to the inactive slot, on the basis that the recovery currently running
+ 		// in the active slot can simply be copied over to the inactive slot, so that both have the same recovery image
+-		std::string command = "dd bs=1048576 if=" + src + " of=" + dest;
++		std::string command = "dd bs=1048576 if=" + src + " of=" + dest + " conv=fsync";
+ 		LOGINFO("Command=%s\n", command.c_str());
+ 
+ 		if (TWFunc::Exec_Cmd(command) != 0) {
+diff --git a/twrpinstall/Android.bp b/twrpinstall/Android.bp
+index a5ef1458..f0aef84a 100755
+--- a/twrpinstall/Android.bp
++++ b/twrpinstall/Android.bp
+@@ -65,6 +65,12 @@ cc_library_static {
+         "bootable/recovery",
+         "bootable/recovery/install/include",
+         "bootable/recovery/recovery_utils/include",
++        "system/core/fs_mgr/libsnapshot/include",
++        "system/core/fs_mgr/include",
++        "system/core/fs_mgr/libdm/include",
++        "system/core/fs_mgr/libfstab/include",
++        "system/core/fs_mgr/liblp/include",
++        "system/core/fs_mgr/libfiemap/include",
+     ],
+ 
+     srcs: [
+@@ -80,7 +86,9 @@ cc_library_static {
+     shared_libs: [
+         "librecovery_ui",
+     ],
+-
++    static_libs: [
++        "libsnapshot_nobinder",
++    ],
+     export_include_dirs: [
+         "include",
+     ],
+diff --git a/twrpinstall/adb_install.cpp b/twrpinstall/adb_install.cpp
+index d9a517f0..f7ef9499 100755
+--- a/twrpinstall/adb_install.cpp
++++ b/twrpinstall/adb_install.cpp
+@@ -100,7 +100,7 @@ static bool WriteStatusToFd(MinadbdCommandStatus status, int fd) {
+ 
+ // Installs the package from FUSE. Returns the installation result and whether it should continue
+ // waiting for new commands.
+-static auto AdbInstallPackageHandler(int* result) {
++static auto AdbInstallPackageHandler(int* result, int* wipe_cache) {
+   // How long (in seconds) we wait for the package path to be ready. It doesn't need to be too long
+   // because the minadbd service has already issued an install command. FUSE_SIDELOAD_HOST_PATHNAME
+   // will start to exist once the host connects and starts serving a package. Poll for its
+@@ -120,8 +120,7 @@ static auto AdbInstallPackageHandler(int* result) {
+         break;
+       }
+     }
+-    int dummy = 0;
+-    *result = TWinstall_zip(FUSE_SIDELOAD_HOST_PATHNAME, &dummy);
++    *result = TWinstall_zip(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache);
+     Fox_Post_Zip_Install(*result);
+     break;
+   }
+@@ -339,7 +338,13 @@ static void CreateMinadbdServiceAndExecuteCommands(
+   signal(SIGPIPE, SIG_DFL);
+ }
+ 
+-  int twrp_sideload(const char* install_file, Device::BuiltinAction* reboot_action) {
++int twrp_sideload(const char* install_file, Device::BuiltinAction* reboot_action,
++                  int* wipe_cache) {
++  if (wipe_cache == nullptr) {
++    LOG(ERROR) << "Missing sideload wipe_cache output";
++    return INSTALL_ERROR;
++  }
++  *wipe_cache = 0;
+ 
+   // Save the usb state to restore after the sideload operation.
+   std::string usb_state = android::base::GetProperty("sys.usb.state", "none");
+@@ -351,7 +356,7 @@ static void CreateMinadbdServiceAndExecuteCommands(
+ 
+   int install_result = INSTALL_ERROR;
+   std::map<MinadbdCommand, CommandFunction> command_map{
+-  { MinadbdCommand::kInstall, std::bind(&AdbInstallPackageHandler, &install_result) },
++  { MinadbdCommand::kInstall, std::bind(&AdbInstallPackageHandler, &install_result, wipe_cache) },
+   { MinadbdCommand::kRebootAndroid, std::bind(&AdbRebootHandler, MinadbdCommand::kRebootAndroid,
+                                               &install_result, reboot_action) },
+   { MinadbdCommand::kRebootBootloader,
+diff --git a/twrpinstall/include/twinstall/adb_install.h b/twrpinstall/include/twinstall/adb_install.h
+index 42321d4e..9769fdd6 100755
+--- a/twrpinstall/include/twinstall/adb_install.h
++++ b/twrpinstall/include/twinstall/adb_install.h
+@@ -21,5 +21,6 @@
+ // Applies a package via `adb sideload` or `adb rescue`. Returns the install result (in `enum
+ // InstallResult`). When a reboot has been requested, INSTALL_REBOOT will be the return value, with
+ // the reboot target set in reboot_action.
+-int twrp_sideload(const char* install_file, Device::BuiltinAction* reboot_action);
++int twrp_sideload(const char* install_file, Device::BuiltinAction* reboot_action,
++                  int* wipe_cache);
+ pid_t GetMiniAdbdPid();
+\ No newline at end of file
+diff --git a/twrpinstall/twinstall.cpp b/twrpinstall/twinstall.cpp
+index e621ca1e..f9270336 100755
+--- a/twrpinstall/twinstall.cpp
++++ b/twrpinstall/twinstall.cpp
+@@ -48,6 +48,7 @@
+ 
+ #include "otautil/sysutil.h"
+ #include <ziparchive/zip_archive.h>
++#include <dirent.h>
+ #include "twinstall/install.h"
+ #include "twinstall/verifier.h"
+ #include "variables.h"
+@@ -62,6 +63,7 @@
+ #include "gui/pages.hpp"
+ #include "gui/blanktimer.hpp"
+ #include "twinstall.h"
++#include <libsnapshot/snapshot.h>
+ #include "installcommand.h"
+ #include "../twrpRepacker.hpp"
+ extern "C" {
+@@ -70,6 +72,54 @@ extern "C" {
+ 
+ #define AB_OTA "payload_properties.txt"
+ 
++namespace {
++
++constexpr char kLkProtectionDevice[] = "dali";
++constexpr char kLkProtectionExec[] = "/system/bin/of-lk-protection-exec";
++
++bool IsLkProtectionSupported() {
++	char device[PROPERTY_VALUE_MAX];
++	property_get("ro.product.device", device, "");
++	return strcmp(device, kLkProtectionDevice) == 0;
++}
++
++bool UmountForAbOta(const char* path) {
++	if (umount2(path, 0) == 0) {
++		LOGINFO("Unmounted '%s' for A/B OTA snapshot handling.\n", path);
++		return true;
++	}
++	if (errno == EINVAL || errno == ENOENT) {
++		return true; // not mounted
++	}
++	LOGERR("Unable to unmount '%s' for A/B OTA snapshot handling: %s\n", path, strerror(errno));
++	return false;
++}
++
++void DeleteDmDevice(const char* name) {
++    const char* const argv[] = {"/system/bin/dmctl", "delete", name, nullptr};
++    const pid_t pid = fork();
++    if (pid == 0) {
++        execv(argv[0], const_cast<char**>(argv));
++        _exit(127);
++    }
++    if (pid > 0) {
++        int status = 0;
++        waitpid(pid, &status, 0);
++        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
++            LOGINFO("Removed stale A/B snapshot device '%s'.\n", name);
++        } else {
++            // Device absent or dmctl failed; informational, not fatal.
++            LOGINFO("Snapshot device '%s' not present or not removable (status %d).\n",
++                    name, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
++        }
++    } else if (pid < 0) {
++        LOGERR("fork failed while deleting stale A/B snapshot device '%s': %s\n",
++               name, strerror(errno));
++    }
++}
++
++} // namespace
++
+ enum zip_type {
+ 	UNKNOWN_ZIP_TYPE = 0,
+ 	UPDATE_BINARY_ZIP_TYPE,
+@@ -173,6 +223,20 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
+ 	char buffer[1024];
+ 	FILE* child_data;
+ 	pipe(pipe_fd);
++	LOGINFO("DEBUG RUB: pipe ok.\n");
++
++	// OrangeFox "Allow SPL downgrade" toggle: expose it to update_engine so
++	// SPL-downgrade OTAs (and payload timestamp downgrades) are permitted.
++	LOGINFO("DEBUG RUB: reading tw_allow_spl_downgrade.\n");
++	if (DataManager::GetIntValue("tw_allow_spl_downgrade") != 0) {
++		LOGINFO("DEBUG RUB: dm value nonzero, setting property.\n");
++		property_set("of.allow_spl_downgrade", "1");
++		LOGINFO("DEBUG RUB: property set to 1.\n");
++		gui_print("SPL downgrade is enabled.\n");
++	} else {
++		LOGINFO("DEBUG RUB: dm value zero, clearing property.\n");
++		property_set("of.allow_spl_downgrade", "0");
++	}
+ 
+ 	std::vector<std::string> args;
+     if (ztype == UPDATE_BINARY_ZIP_TYPE) {
+@@ -189,11 +253,27 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
+         return ret_val;
+     }
+ 
+-	// Convert the vector to a NULL-terminated char* array suitable for execv.
+-	const char* chr_args[args.size() + 1];
+-	chr_args[args.size()] = NULL;
+-	for (size_t i = 0; i < args.size(); i++)
+-		chr_args[i] = args[i].c_str();
++	const bool protect_lk = DataManager::GetIntValue(TW_LK_PROTECT_VAR) != 0 && IsLkProtectionSupported();
++	std::vector<std::string> exec_args;
++	if (protect_lk) {
++		gui_print("LK protection is enabled. Standard LK writes are redirected to temporary storage.\n");
++		if (ztype == AB_OTA_ZIP_TYPE) {
++			gui_print("An OTA that requires a newer LK may not boot after installation.\n");
++		}
++		LOGINFO("LK protection is enabled for updater '%s'; aliases and resolved LK block nodes are virtualized.\n", args[0].c_str());
++		exec_args.reserve(args.size() + 2);
++		exec_args.emplace_back(kLkProtectionExec);
++		exec_args.emplace_back("--");
++		exec_args.insert(exec_args.end(), args.begin(), args.end());
++	} else {
++		exec_args = args;
++	}
++
++	// Convert the selected command to a NULL-terminated char* array for execve.
++	const char* chr_args[exec_args.size() + 1];
++	chr_args[exec_args.size()] = NULL;
++	for (size_t i = 0; i < exec_args.size(); i++)
++		chr_args[i] = exec_args[i].c_str();
+ 
+ 	pid_t pid = fork();
+ 	if (pid == 0) {
+@@ -276,6 +356,67 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
+       		return INSTALL_ERROR;
+     	}
+ 
++	// OrangeFox: when "Allow SPL downgrade" is enabled and this is an A/B OTA,
++	// force-finish the VAB snapshot merge in recovery. Downgrade OTAs often
++	// leave snapshots in an Unverified state, which makes init refuse to merge
++	// on next boot and can leave the device unable to start
++	// (e.g. netbpfload-missing on dali). /metadata is mounted by the AB_OTA
++	// branch above, so the snapshots dir is visible here.
++	if (ztype == AB_OTA_ZIP_TYPE) {
++		// Direct-write mode (update_engine disabled VABC) writes partitions
++		// immediately without snapshots; there is nothing to merge.
++		if (android::base::GetBoolProperty("of.direct_write_mode", false)) {
++			LOGINFO("Direct-write mode: skipping snapshot merge.\n");
++		} else {
++		// Merge only when there are actual pending snapshot status files.
++		// (access() on the dir alone is not enough: an empty dir means there
++		// is nothing to merge, and a missing dir usually means /metadata is
++		// not mounted, which is an error worth logging.)
++		bool has_pending = false;
++		// FinishMergeInRecovery needs /metadata to read snapshot state; the
++		// sideload updater runs in its own mount namespace (LK protection), so
++		// mounting here only helps the merge step and does not affect the
++		// updater's ExpectMetadataMounted decision.
++		// The sideload updater may have unmounted /metadata before exiting;
++		// always (re)mount so FinishMergeInRecovery can read snapshot state.
++		// Mount_By_Path is a no-op when the partition is already mounted.
++		LOGINFO("Mounting /metadata before snapshot merge check.\n");
++		if (!PartitionManager.Mount_By_Path("/metadata", true)) {
++			LOGERR("Failed to mount /metadata; skipping snapshot merge.\n");
++		}
++		DIR* snapdir = opendir("/metadata/ota/snapshots");
++		if (!snapdir) {
++			LOGERR("Cannot open /metadata/ota/snapshots (is /metadata mounted?); skipping snapshot merge.\n");
++		} else {
++			struct dirent* de;
++			while ((de = readdir(snapdir))) {
++				if (strcmp(de->d_name, ".") != 0 && strcmp(de->d_name, "..") != 0) {
++					has_pending = true;
++					break;
++				}
++			}
++			closedir(snapdir);
++		}
++		if (!has_pending) {
++			LOGINFO("No pending snapshots to merge; skipping snapshot merge.\n");
++		} else {
++			gui_print("SPL downgrade enabled: merging snapshots in recovery...\n");
++			gui_print("This may take a few minutes.\n");
++			auto sm = android::snapshot::SnapshotManager::New();
++			if (!sm) {
++				LOGERR("SnapshotManager creation failed; cannot merge snapshots.\n");
++				gui_print_color("error", "SnapshotManager failed; see recovery.log. The system may not boot.\n");
++			} else if (sm->FinishMergeInRecovery()) {
++				gui_print("Snapshot merge completed successfully.\n");
++			} else {
++				LOGERR("FinishMergeInRecovery failed; see recovery.log.\n");
++				gui_print_color("error", "Snapshot merge failed; the system may not boot. See recovery.log.\n");
++			}
++		}
++	}
++
++    } else }
++		}
+ 	return INSTALL_SUCCESS;
+ }
+ 
+@@ -314,6 +455,10 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+ 
+   DataManager::GetValue(TW_UNMOUNT_SYSTEM, unmount_system);
+   DataManager::GetValue(TW_UNMOUNT_VENDOR, unmount_vendor);
++  if (strncmp(path, "/sideload", 9) == 0) {
++    LOGINFO("Skipping vendor unmount for ADB sideload.\n");
++    unmount_vendor = 0;
++  }
+ 
+ #ifndef TW_OEM_BUILD
+   DataManager::GetValue(TW_SIGNED_ZIP_VERIFY_VAR, zip_verify);
+@@ -356,6 +501,18 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+       return INSTALL_CORRUPT;
+     }
+ 
++    std::string update_binary_name(UPDATE_BINARY_NAME);
++    ZipEntry64 update_binary_entry;
++    const bool is_update_binary = FindEntry(Zip, update_binary_name, &update_binary_entry) == 0;
++    std::string ab_binary_name(AB_OTA);
++    ZipEntry64 ab_binary_entry;
++    const bool is_ab_ota = !is_update_binary && FindEntry(Zip, ab_binary_name, &ab_binary_entry) == 0;
++    if (is_ab_ota) {
++        LOGINFO("Skipping system and vendor unmount for local A/B OTA.\n");
++        unmount_system = 0;
++        unmount_vendor = 0;
++    }
++
+     if (unmount_system) {
+ 	if (PartitionManager.Is_Mounted_By_Path(PartitionManager.Get_Android_Root_Path())) {
+ 		gui_msg("unmount_system=Unmounting System...");
+@@ -394,9 +551,7 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+   time_t start, stop;
+   time(&start);
+ 
+-  std::string update_binary_name(UPDATE_BINARY_NAME);
+-  ZipEntry64 update_binary_entry;
+-  if (FindEntry(Zip, update_binary_name, &update_binary_entry) == 0) {
++  if (is_update_binary) {
+ 		LOGINFO("Update binary zip\n");
+ 		// Additionally verify the compatibility of the package.
+ 		if (!Fox_Skip_Treble_Compatibility_Check() && !verify_package_compatibility(Zip)) {
+@@ -423,9 +578,7 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+ 			}
+ 		}
+ 	} else {
+-		std::string ab_binary_name(AB_OTA);
+-		ZipEntry64 ab_binary_entry;
+-		if (FindEntry(Zip, ab_binary_name, &ab_binary_entry) == 0) {
++		if (is_ab_ota) {
+ 			LOGINFO("AB zip\n");
+ 			gui_msg(Msg(msg::kHighlight, "flash_ab_inactive=Flashing A/B zip to inactive slot: {1}")(PartitionManager.Get_Active_Slot_Display()=="A"?"B":"A"));
+ 			// We need this so backuptool can do its magic
+@@ -445,7 +598,71 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+ 
+ 			TWFunc::IsRecoveryOverwritten(true);
+ 
++			// Free current-slot super mounts so an interrupted Virtual A/B
++			// transaction can be cancelled, and expose /metadata for snapshot
++			// state. update_engine_sideload recreates everything it needs.
++			LOGINFO("Preparing A/B OTA snapshot handling: unmounting Recovery super mounts.\n");
++			const std::string ab_system_root = PartitionManager.Get_Android_Root_Path();
++
++			bool ab_umount_ok = true;
++			ab_umount_ok &= UmountForAbOta(ab_system_root.c_str());
++			ab_umount_ok &= UmountForAbOta("/vendor/lib/modules");
++			ab_umount_ok &= UmountForAbOta("/vendor");
++			ab_umount_ok &= UmountForAbOta("/odm/lib/modules");
++			ab_umount_ok &= UmountForAbOta("/odm");
++			ab_umount_ok &= UmountForAbOta("/product");
++			ab_umount_ok &= UmountForAbOta("/system_ext");
++			ab_umount_ok &= UmountForAbOta("/vendor_dlkm");
++			ab_umount_ok &= UmountForAbOta("/odm_dlkm");
++			ab_umount_ok &= UmountForAbOta("/system_dlkm");
++
++			if (ab_umount_ok) {
++			LOGINFO("Clearing stale A/B snapshot devices.\n");
++			const char* const kAbSnapshotPartitions[] = {
++				"system", "vendor", "odm", "product", "system_ext",
++				"system_dlkm", "vendor_dlkm", "odm_dlkm", "mi_ext",
++			};
++			// An interrupted OTA may leave stale dm devices on EITHER slot
++			// (the slot that was being written). Cover both suffixes so
++			// update_engine's CleanupPreviousUpdateAction never hits
++			// "DM_DEV_CREATE failed ... Device or resource busy". Deleting a
++			// device that is missing or still mounted is harmless (logged only
++			// on success).
++			const char* const kAbSlotSuffixes[] = {"_a", "_b"};
++			char ab_device_name[128];
++			for (const char* slot : kAbSlotSuffixes) {
++				for (const char* partition : kAbSnapshotPartitions) {
++					snprintf(ab_device_name, sizeof(ab_device_name), "%s%s", partition, slot);
++					DeleteDmDevice(ab_device_name);
++					snprintf(ab_device_name, sizeof(ab_device_name), "%s%s-cow", partition, slot);
++					DeleteDmDevice(ab_device_name);
++					snprintf(ab_device_name, sizeof(ab_device_name), "%s%s-base", partition, slot);
++					DeleteDmDevice(ab_device_name);
++					snprintf(ab_device_name, sizeof(ab_device_name), "%s%s-src", partition, slot);
++					DeleteDmDevice(ab_device_name);
++					snprintf(ab_device_name, sizeof(ab_device_name), "%s%s-cow-img", partition, slot);
++					DeleteDmDevice(ab_device_name);
++				}
++			}
++
++			} else {
++				LOGERR("Some A/B super mounts could not be unmounted; skipping stale snapshot device cleanup to avoid deleting in-use devices.\n");
++			}
++
++			if (PartitionManager.Mount_By_Path("/metadata", false)) {
++				LOGINFO("Mounted /metadata for A/B OTA snapshot handling.\n");
++			} else {
++				LOGERR("Unable to mount /metadata for A/B OTA snapshot handling.\n");
++			}
++			// NOTE: do NOT delete /metadata/ota/snapshots status files here.
++			// update_engine reads them when deciding whether to keep or wipe
++			// the snapshots; deleting them makes it schedule a wipe and drop
++			// /metadata/ota, after which FinishMergeInRecovery has nothing to
++			// merge (observed: "Open failed: /metadata/ota: No such file or
++			// directory" + "FinishMergeInRecovery failed" on dali downgrade).
++			LOGINFO("DEBUG: after metadata mount, calling Run_Update_Binary.\n");
+ 			ret_val = Run_Update_Binary(path, wipe_cache, AB_OTA_ZIP_TYPE);
++			LOGINFO("DEBUG: Run_Update_Binary returned %d.\n", ret_val);
+ 
+ 			DataManager::SetValue(FOX_ZIP_INSTALLER_CODE, 1); // mark as custom ROM install
+ 
+diff --git a/variables.h b/variables.h
+index 75f67683..008cc0c7 100644
+--- a/variables.h
++++ b/variables.h
+@@ -109,7 +109,7 @@ static int Fox_Current_ROM_IsMIUI = 0; // is the currently installed ROM a MIUI
+ #define FOX_ZIP_INSTALLER_TREBLE 	"fox_zip_installer_treble"
+ #define FOX_DISABLE_OTA_AUTO_REBOOT 	"fox_disable_ota_auto_reboot_check"
+ #define FOX_STARTUP_SCRIPT 		"/sbin/foxstart.sh"
+-#define FOX_PS_BIN 			"/FFiles/ps"
++#define FOX_PS_BIN 			"/system/bin/ps"
+ #define FOX_NEW_MAGISKBOOT 		"/FFiles/magiskboot_new"
+ #define FOX_MAGISK_ZIP_INSTALLER 	"Magisk.zip"
+ #define FOX_MAGISK_UNINSTALLER 		"uninstall.zip"
+@@ -339,6 +339,7 @@ static int Fox_Current_ROM_IsMIUI = 0; // is the currently installed ROM a MIUI
+ #define TW_IS_SUPER             "tw_is_super"
+ #define TW_VIRTUAL_AB_ENABLED   "tw_virtual_ab.enabled"
+ #define TW_AUTO_REFLASHTWRP_VAR "tw_auto_reflashtwrp"
++#define TW_LK_PROTECT_VAR       "tw_lk_protect"
+ 
+ // BUILD PROPS
+ #define TW_FASTBOOT_MODE_PROP         "ro.twrp.fastbootd"
