@@ -1,14 +1,14 @@
 #!/system/bin/sh
 # dali-check-data.sh
-# Detect a corrupt (or non-F2FS) userdata superblock very early in recovery
-# startup and rebuild the filesystem in place, so TWRP never falls into the
-# "Decrypt adopted storage" wait (which otherwise looks like a hang on the
-# splash screen). A corrupt superblock means the partition contents are
-# already unrecoverable; rebuilding is the only way to make recovery usable.
+# Detect a corrupt/non-F2FS userdata superblock very early in recovery
+# startup and try to repair it WITHOUT formatting, so TWRP never falls
+# into the "Decrypt adopted storage" wait (which otherwise looks like a
+# hang on the splash screen) and no data is ever lost automatically.
 #
 # The F2FS superblock magic lives at byte offset 1024 (0x400) and is
-# 0xF2F52010 on disk. If we cannot read that magic, the partition is either
-# not F2FS or its primary superblock is corrupt.
+# 0xF2F52010 on disk. If we cannot read that magic, the primary
+# superblock is missing/corrupt; fsck.f2fs can often recover it from the
+# backup superblock / checkpoint area.
 
 DATA_DEV=/dev/block/by-name/userdata
 MARK=/tmp/dali-data-check.done
@@ -35,11 +35,14 @@ case "$magic" in
         log "valid F2FS superblock; no action"
         ;;
     *)
-        log "corrupt/non-F2FS superblock; rebuilding userdata filesystem"
-        if make_f2fs -f "$DATA_DEV" >> "$LOG" 2>&1; then
-            log "userdata filesystem rebuilt successfully"
+        log "corrupt/non-F2FS superblock; attempting fsck repair (no format)"
+        # fsck.f2fs -a: check/fix potential corruption reported by f2fs.
+        # It never reformats; if the backup superblock/checkpoint is
+        # intact it restores the primary one and keeps the data.
+        if fsck.f2fs -a "$DATA_DEV" >> "$LOG" 2>&1; then
+            log "fsck repair completed"
         else
-            log "make_f2fs failed; leaving partition as-is"
+            log "fsck could not repair; leaving partition untouched (user may format manually)"
         fi
         ;;
 esac
