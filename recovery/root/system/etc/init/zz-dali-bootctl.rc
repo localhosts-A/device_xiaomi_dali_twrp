@@ -1,4 +1,3 @@
-import /init.recovery.project.rc
 
 # Official MTK AIDL boot HAL extracted from the stock vendor partition.
 # The AIDL binary name is android.hardware.boot-service.mtk (not *_recovery);

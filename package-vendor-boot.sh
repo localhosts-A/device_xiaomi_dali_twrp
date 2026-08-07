@@ -14,7 +14,8 @@ AVB_FINGERPRINT=alps/hal_mgvi_64_64only_armv82/mgvi_64_64only_armv82:15/AP3A.240
 SCP_OUTPUT_SHA256=e00d0d0a8892ffd07467e4dc38060b6ea901125e4e86f2d8e38fd7ef2a9ac0c4
 GOODIX_OUTPUT_SHA256=2015fd201a82913ef07b736ac3f35dcc89562cb92359e3d934ec98764219b3c0
 XIAOMI_TOUCH_SHA256=46a49015776c944612669a0c7d7d26d14dc28333e5ffbc8248f75ab0aa4d6e08
-MERGED_MODULES_DEP_SHA256=4fd72cf4e97523f055646937b87e8b871fb17f6bdcbaa031e6c7e3155de05e49
+FOCALTECH_OUTPUT_SHA256=f7c5c0dcde05c33a1b5764f974e782ecd89c9eb7e3dec1299734092e9311578d
+MERGED_MODULES_DEP_SHA256=9a1b0bc55dfd9be9a91bdcd908fd0d02cd4c08d9de14cfa8b6ac1150543af3a4
 FLASHLIGHT_SHA256=6c0cd49e6b460831b5d77389168aab30ee83340c7f439ec1d36f67d076e7a425
 LEDS_MT6379_SHA256=3313b221d8b85e6f8c0c8dfbe53ef2434beea2fddb80d6c568e1f30aa1e8b893
 LEDS_MT6379PMIC_SHA256=8cb39457b591a069bb00e63aab71525f7380a597f54e4b398d084cb852dd64d4
@@ -146,6 +147,7 @@ validate_recovery_payload() {
     require_sha256 "$SCP_OUTPUT_SHA256" "$module_root/scp.ko"
     require_sha256 "$GOODIX_OUTPUT_SHA256" "$module_root/goodix_core_dali.ko"
     require_sha256 "$XIAOMI_TOUCH_SHA256" "$module_root/xiaomi_touch_dali.ko"
+    require_sha256 "$FOCALTECH_OUTPUT_SHA256" "$module_root/focaltech_touch_dali.ko"
     require_sha256 "$FLASHLIGHT_SHA256" "$module_root/flashlight.ko"
     require_sha256 "$LEDS_MT6379_SHA256" "$module_root/leds-mt6379.ko"
     require_sha256 "$LEDS_MT6379PMIC_SHA256" "$module_root/leds-mt6379pmic.ko"
@@ -158,13 +160,6 @@ validate_recovery_payload() {
     require_sha256 "$CS40L26_SPI_SHA256" "$module_root/cs40l26-spi.ko"
     require_sha256 "$SND_SOC_CS40L26_SHA256" "$module_root/snd-soc-cs40l26.ko"
     require_sha256 "$MERGED_MODULES_DEP_SHA256" "$module_root/modules.dep"
-    focaltech_entry=$(find "$module_root" -iname "*focaltech*" -print -quit)
-    if [ -n "$focaltech_entry" ]; then
-        die "final Recovery payload contains a FocalTech module"
-    fi
-    if grep -F -- "focaltech_touch_dali.ko" "$module_root/modules.dep" >/dev/null; then
-        die "final Recovery module metadata references FocalTech"
-    fi
     if grep -F -- "/vendor_dlkm/" "$module_root/modules.dep" >/dev/null; then
         die "final Recovery module metadata references vendor_dlkm"
     fi
@@ -199,14 +194,11 @@ for line_number, line in enumerate((module_root / "modules.dep").read_text(encod
 PY
 
     [ -f "$recovery_binary" ] || die "final Recovery executable is missing"
-    for requested_module in xiaomi_touch_dali.ko goodix_core_dali.ko
+    for requested_module in xiaomi_touch_dali.ko goodix_core_dali.ko focaltech_touch_dali.ko
     do
         grep -aF -- "$requested_module" "$recovery_binary" >/dev/null ||
             die "final Recovery executable does not request $requested_module"
     done
-    if grep -aF -- "focaltech_touch_dali.ko" "$recovery_binary" >/dev/null; then
-        die "final Recovery executable still requests FocalTech"
-    fi
 }
 
 [ "$#" -eq 2 ] || die "usage: $0 /absolute/path/to/source /absolute/path/to/vendor_boot.img"

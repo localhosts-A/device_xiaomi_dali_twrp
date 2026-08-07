@@ -1,24 +1,5 @@
 diff --git a/Android.bp b/Android.bp
 index 62afe092..b95c47a6 100644
---- a/Android.bp
-+++ b/Android.bp
-@@ -1364,3 +1364,16 @@ cc_fuzz {
-         ]
-     },
- }
-+
-+cc_binary {
-+    name: "merge_ab_tool",
-+    recovery_available: true,
-+    srcs: ["merge_ab_tool.cc"],
-+    shared_libs: [
-+        "libsnapshot",
-+        "libbase",
-+        "liblog",
-+    ],
-+    cflags: ["-Wno-unused-parameter"],
-+    include_dirs: ["system/core/fs_mgr/include", "system/core/fs_mgr/libdm/include", "system/core/fs_mgr/libfstab/include", "system/core/fs_mgr/liblp/include", "system/core/fs_mgr/libfiemap/include"],
-+}
 diff --git a/aosp/dynamic_partition_control_android.cc b/aosp/dynamic_partition_control_android.cc
 index 3548959c..1269e76b 100644
 --- a/aosp/dynamic_partition_control_android.cc

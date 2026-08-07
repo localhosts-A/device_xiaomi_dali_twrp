@@ -67,3 +67,24 @@ Additional user-authorized source exceptions (outside this tree):
 `bootable/recovery/minuitwrp/events.cpp` (EV_FF haptics),
 `bootable/recovery/gui/slidervalue.cpp` (slider haptic preview),
 `system/vold/*` (FBE/Weaver compatibility).
+
+### patches/source/ (whole-repo diffs, not applied by apply-patches.sh)
+
+These two patches capture the cumulative working-tree changes in the
+bootable/recovery and system/update_engine repos that are not expressible
+as individual device-tree patches. They are regenerated from `git diff HEAD`
+and include untracked files such as lk_protection_exec.c. They are kept for
+reference/reproducibility:
+
+| File | Contents |
+|---|---|
+| 0047-bootable-recovery-all-changes.patch | bootable/recovery cumulative diff (incl. lk_protection_exec.c, SPL/LK UI strings, direct-write merge skip, EVFF) |
+| 0048-update-engine-direct-write.patch | update_engine non-VAB direct-write mode + MapUpdateSnapshot fallback |
+
+To regenerate either patch from a working source tree, run
+`git -C <repo> diff HEAD > device/xiaomi/dali/patches/source/00XX-....patch`
+(untracked files must be `git add`-ed first).
+
+Note: merge_ab_tool.cc referenced by older 0048 revisions is obsolete
+(direct-write mode makes the standalone merge tool unnecessary); the
+current 0048 no longer adds that module to Android.bp.
