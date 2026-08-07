@@ -1,7 +1,5 @@
-diff --git a/Android.bp b/Android.bp
-index 62afe092..b95c47a6 100644
 diff --git a/aosp/dynamic_partition_control_android.cc b/aosp/dynamic_partition_control_android.cc
-index 3548959c..1269e76b 100644
+index 3548959..1269e76 100644
 --- a/aosp/dynamic_partition_control_android.cc
 +++ b/aosp/dynamic_partition_control_android.cc
 @@ -207,6 +207,17 @@ bool DynamicPartitionControlAndroid::MapPartitionInternal(
@@ -23,7 +21,7 @@ index 3548959c..1269e76b 100644
      params.timeout_ms = kMapTimeout;
      success = CreateLogicalPartition(params, path);
 diff --git a/aosp/hardware_android.cc b/aosp/hardware_android.cc
-index f8732abd..c6faae02 100644
+index f8732ab..c6faae0 100644
 --- a/aosp/hardware_android.cc
 +++ b/aosp/hardware_android.cc
 @@ -258,7 +258,8 @@ int64_t HardwareAndroid::GetBuildTimestamp() const {
@@ -37,7 +35,7 @@ index f8732abd..c6faae02 100644
  }
  
 diff --git a/aosp/update_attempter_android.cc b/aosp/update_attempter_android.cc
-index 0f6fc5ce..14de5bac 100644
+index 0f6fc5c..14de5ba 100644
 --- a/aosp/update_attempter_android.cc
 +++ b/aosp/update_attempter_android.cc
 @@ -15,6 +15,7 @@
@@ -67,7 +65,7 @@ index 0f6fc5ce..14de5bac 100644
    install_plan_.switch_slot_on_reboot =
        GetHeaderAsBool(headers[kPayloadPropertySwitchSlotOnReboot], true);
 diff --git a/payload_consumer/delta_performer.cc b/payload_consumer/delta_performer.cc
-index daf78be4..586a1309 100644
+index daf78be..3c5f4a2 100644
 --- a/payload_consumer/delta_performer.cc
 +++ b/payload_consumer/delta_performer.cc
 @@ -408,7 +408,9 @@ bool DeltaPerformer::CheckSPLDowngrade() {
@@ -93,8 +91,23 @@ index daf78be4..586a1309 100644
      const auto avb_state =
          android::base::GetProperty("ro.boot.verifiedbootstate", "green");
      if (android::base::EqualsIgnoreCase(avb_state, "green")) {
+@@ -1478,6 +1485,14 @@ bool DeltaPerformer::ResetUpdateProgress(
+ }
+ 
+ bool DeltaPerformer::ShouldCheckpoint() {
++  // Direct-write (non-VAB) mode has no snapshot/checkpoint storage in
++  // sideload: MemoryPrefs cannot start/submit transactions (the MemoryStorage
++  // backend lacks CreateTemporaryPrefs/SwapPrefs), so every checkpoint would
++  // log "Failed to submit transaction in checkpointing" and stall the install
++  // in a retry loop. Skip checkpoints entirely when VABC is disabled.
++  if (install_plan_ && install_plan_->disable_vabc) {
++    return false;
++  }
+   base::TimeTicks curr_time = base::TimeTicks::Now();
+   if (curr_time > update_checkpoint_time_) {
+     update_checkpoint_time_ = curr_time + update_checkpoint_wait_;
 diff --git a/payload_consumer/filesystem_verifier_action.cc b/payload_consumer/filesystem_verifier_action.cc
-index 5345085c..a8b29564 100644
+index 5345085..a8b2956 100644
 --- a/payload_consumer/filesystem_verifier_action.cc
 +++ b/payload_consumer/filesystem_verifier_action.cc
 @@ -83,6 +83,14 @@ const off_t kReadFileBufferSize = 128 * 1024;

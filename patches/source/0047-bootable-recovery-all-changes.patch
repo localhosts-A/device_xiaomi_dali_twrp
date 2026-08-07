@@ -176,7 +176,7 @@ index b068b2ec..0d4d90e3 100755
  	else
  	{
 diff --git a/gui/theme/common/languages/en.xml b/gui/theme/common/languages/en.xml
-index 7c64c5a8..dbeacdd9 100644
+index b8a3ba3d..e26cc6e6 100644
 --- a/gui/theme/common/languages/en.xml
 +++ b/gui/theme/common/languages/en.xml
 @@ -1012,7 +1012,8 @@
@@ -1288,7 +1288,7 @@ index 304f617c..044fd6ee 100755
  			} else if (strcmp(command, "fixperms") == 0 || strcmp(command, "fixpermissions") == 0 || strcmp(command, "fixcontexts") == 0) {
  				ret_val = PartitionManager.Fix_Contexts();
 diff --git a/orangefox.mk b/orangefox.mk
-index 0f9b4c2c..77980a11 100644
+index 1f02b296..37b63422 100644
 --- a/orangefox.mk
 +++ b/orangefox.mk
 @@ -91,7 +91,9 @@ endif
@@ -1303,7 +1303,7 @@ index 0f9b4c2c..77980a11 100644
  
  # enable vbmeta patch in magiskboot 24+
 diff --git a/partition.cpp b/partition.cpp
-index 18be6d4c..de5a2db7 100644
+index c437cc77..8bad5faf 100644
 --- a/partition.cpp
 +++ b/partition.cpp
 @@ -38,6 +38,7 @@
@@ -2426,7 +2426,7 @@ index 42321d4e..9769fdd6 100755
  pid_t GetMiniAdbdPid();
 \ No newline at end of file
 diff --git a/twrpinstall/twinstall.cpp b/twrpinstall/twinstall.cpp
-index e621ca1e..44a0038c 100755
+index e621ca1e..1999e25d 100755
 --- a/twrpinstall/twinstall.cpp
 +++ b/twrpinstall/twinstall.cpp
 @@ -48,6 +48,7 @@
@@ -2500,10 +2500,19 @@ index e621ca1e..44a0038c 100755
  enum zip_type {
  	UNKNOWN_ZIP_TYPE = 0,
  	UPDATE_BINARY_ZIP_TYPE,
-@@ -174,6 +224,16 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
+@@ -174,6 +224,25 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
  	FILE* child_data;
  	pipe(pipe_fd);
  
++	// OrangeFox "Allow SPL downgrade" toggle: expose it to update_engine so
++	// SPL-downgrade OTAs (and payload timestamp downgrades) are permitted.
++	if (DataManager::GetIntValue("tw_allow_spl_downgrade") != 0) {
++		property_set("of.allow_spl_downgrade", "1");
++		gui_print("SPL downgrade is enabled.\n");
++	} else {
++		property_set("of.allow_spl_downgrade", "0");
++	}
++
 +	// OrangeFox "Allow SPL downgrade" toggle: expose it to update_engine so
 +	// SPL-downgrade OTAs (and payload timestamp downgrades) are permitted.
 +	if (DataManager::GetIntValue("tw_allow_spl_downgrade") != 0) {
@@ -2517,7 +2526,7 @@ index e621ca1e..44a0038c 100755
  	std::vector<std::string> args;
      if (ztype == UPDATE_BINARY_ZIP_TYPE) {
  		ret_val = update_binary_command(path, 0, pipe_fd[1], &args);
-@@ -189,11 +249,27 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
+@@ -189,11 +258,27 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
          return ret_val;
      }
  
@@ -2529,9 +2538,9 @@ index e621ca1e..44a0038c 100755
 +	const bool protect_lk = DataManager::GetIntValue(TW_LK_PROTECT_VAR) != 0 && IsLkProtectionSupported();
 +	std::vector<std::string> exec_args;
 +	if (protect_lk) {
-+		gui_print("已开启LK保护，标准LK写入将重定向到临时存储。\n");
++		gui_print("LK protection is enabled. Standard LK writes are redirected to temporary storage.\n");
 +		if (ztype == AB_OTA_ZIP_TYPE) {
-+			gui_print("需要更新LK的OTA可能在安装后无法启动。\n");
++			gui_print("An OTA that requires a newer LK may not boot after installation.\n");
 +		}
 +		LOGINFO("LK protection is enabled for updater '%s'; aliases and resolved LK block nodes are virtualized.\n", args[0].c_str());
 +		exec_args.reserve(args.size() + 2);
@@ -2550,7 +2559,7 @@ index e621ca1e..44a0038c 100755
  
  	pid_t pid = fork();
  	if (pid == 0) {
-@@ -276,6 +352,66 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
+@@ -276,6 +361,66 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
        		return INSTALL_ERROR;
      	}
  
@@ -2617,7 +2626,7 @@ index e621ca1e..44a0038c 100755
  	return INSTALL_SUCCESS;
  }
  
-@@ -314,6 +450,10 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+@@ -314,6 +459,14 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
  
    DataManager::GetValue(TW_UNMOUNT_SYSTEM, unmount_system);
    DataManager::GetValue(TW_UNMOUNT_VENDOR, unmount_vendor);
@@ -2625,10 +2634,14 @@ index e621ca1e..44a0038c 100755
 +    LOGINFO("Skipping vendor unmount for ADB sideload.\n");
 +    unmount_vendor = 0;
 +  }
++  if (strncmp(path, "/sideload", 9) == 0) {
++    LOGINFO("Skipping vendor unmount for ADB sideload.\n");
++    unmount_vendor = 0;
++  }
  
  #ifndef TW_OEM_BUILD
    DataManager::GetValue(TW_SIGNED_ZIP_VERIFY_VAR, zip_verify);
-@@ -356,6 +496,18 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+@@ -356,6 +509,18 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
        return INSTALL_CORRUPT;
      }
  
@@ -2647,7 +2660,7 @@ index e621ca1e..44a0038c 100755
      if (unmount_system) {
  	if (PartitionManager.Is_Mounted_By_Path(PartitionManager.Get_Android_Root_Path())) {
  		gui_msg("unmount_system=Unmounting System...");
-@@ -394,9 +546,7 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+@@ -394,9 +559,7 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
    time_t start, stop;
    time(&start);
  
@@ -2658,7 +2671,7 @@ index e621ca1e..44a0038c 100755
  		LOGINFO("Update binary zip\n");
  		// Additionally verify the compatibility of the package.
  		if (!Fox_Skip_Treble_Compatibility_Check() && !verify_package_compatibility(Zip)) {
-@@ -423,9 +573,7 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+@@ -423,9 +586,7 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
  			}
  		}
  	} else {
@@ -2669,7 +2682,7 @@ index e621ca1e..44a0038c 100755
  			LOGINFO("AB zip\n");
  			gui_msg(Msg(msg::kHighlight, "flash_ab_inactive=Flashing A/B zip to inactive slot: {1}")(PartitionManager.Get_Active_Slot_Display()=="A"?"B":"A"));
  			// We need this so backuptool can do its magic
-@@ -445,6 +593,68 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
+@@ -445,6 +606,119 @@ int TWinstall_zip(const char *path, int *wipe_cache, bool check_for_digest)
  
  			TWFunc::IsRecoveryOverwritten(true);
  
@@ -2735,6 +2748,57 @@ index e621ca1e..44a0038c 100755
 +			// /metadata/ota, after which FinishMergeInRecovery has nothing to
 +			// merge (observed: "Open failed: /metadata/ota: No such file or
 +			// directory" + "FinishMergeInRecovery failed" on dali downgrade).
++			UmountForAbOta(ab_system_root.c_str());
++			UmountForAbOta("/vendor/lib/modules");
++			UmountForAbOta("/vendor");
++			UmountForAbOta("/odm/lib/modules");
++			UmountForAbOta("/odm");
++			UmountForAbOta("/product");
++			UmountForAbOta("/system_ext");
++			UmountForAbOta("/vendor_dlkm");
++			UmountForAbOta("/odm_dlkm");
++			UmountForAbOta("/system_dlkm");
++
++			LOGINFO("Clearing stale A/B snapshot devices.\n");
++			const char* const kAbSnapshotPartitions[] = {
++				"system", "vendor", "odm", "product", "system_ext",
++				"system_dlkm", "vendor_dlkm", "odm_dlkm", "mi_ext",
++			};
++			char ab_device_name[128];
++			for (const char* partition : kAbSnapshotPartitions) {
++				snprintf(ab_device_name, sizeof(ab_device_name), "%s_a", partition);
++				DeleteDmDevice(ab_device_name);
++				snprintf(ab_device_name, sizeof(ab_device_name), "%s_a-cow", partition);
++				DeleteDmDevice(ab_device_name);
++				snprintf(ab_device_name, sizeof(ab_device_name), "%s_a-base", partition);
++				DeleteDmDevice(ab_device_name);
++				snprintf(ab_device_name, sizeof(ab_device_name), "%s_a-src", partition);
++				DeleteDmDevice(ab_device_name);
++				snprintf(ab_device_name, sizeof(ab_device_name), "%s_a-cow-img", partition);
++				DeleteDmDevice(ab_device_name);
++			}
++
++			if (PartitionManager.Mount_By_Path("/metadata", false)) {
++				LOGINFO("Mounted /metadata for A/B OTA snapshot handling.\n");
++			} else {
++				LOGERR("Unable to mount /metadata for A/B OTA snapshot handling.\n");
++			}
++			// An interrupted previous OTA can leave snapshot status files for the
++			// current slot in /metadata/ota/snapshots even though its dm devices
++			// are already gone (cleared above). libsnapshot's FinishUpdate() then
++			// fails in EnsureNoOverflowSnapshot() with "Could not read snapshot
++			// device table" and the whole OTA aborts with
++			// kPostinstallRunnerError. Remove the stale statuses so the new OTA
++			// finalizes cleanly; update_engine recreates target-slot statuses.
++			LOGINFO("Clearing stale A/B snapshot status files for current slot.\n");
++			char ab_status_path[160];
++			for (const char* partition : kAbSnapshotPartitions) {
++				snprintf(ab_status_path, sizeof(ab_status_path),
++				         "/metadata/ota/snapshots/%s_a", partition);
++				if (unlink(ab_status_path) == 0) {
++					LOGINFO("Removed stale snapshot status %s.\n", ab_status_path);
++				}
++			}
  			ret_val = Run_Update_Binary(path, wipe_cache, AB_OTA_ZIP_TYPE);
  
  			DataManager::SetValue(FOX_ZIP_INSTALLER_CODE, 1); // mark as custom ROM install
