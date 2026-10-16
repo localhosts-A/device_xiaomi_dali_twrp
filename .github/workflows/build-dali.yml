@@ -11,11 +11,6 @@ on:
         description: Commit SHA in the requesting repository (metadata only)
         required: false
         type: string
-      upload_fragment:
-        description: Upload the image to this public repository (may expose private ramdisk resources)
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -136,15 +131,6 @@ jobs:
               echo "- Trigger commit: $TRIGGER_SHA"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload recovery fragment
-        if: ${{ inputs.upload_fragment }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: dali-vendor-boot-fragment-${{ github.run_number }}
-          path: twrp/out/target/product/dali/vendor_boot.img
-          if-no-files-found: error
-          retention-days: 1
 
       - name: Remove private source and build output
         if: ${{ always() }}
