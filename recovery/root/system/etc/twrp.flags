@@ -1,1 +1,0 @@
-/usb_otg auto /dev/block/sdd1 /dev/block/sdd flags=storage;removable;display="USB-OTG"
