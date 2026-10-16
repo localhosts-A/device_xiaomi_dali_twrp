@@ -3,12 +3,8 @@ name: Build Dali TWRP recovery fragment
 on:
   workflow_dispatch:
     inputs:
-      trigger_repository:
-        description: Repository that requested this build (metadata only)
-        required: false
-        type: string
-      trigger_sha:
-        description: Commit SHA in the requesting repository (metadata only)
+      device_tree_ref:
+        description: Private device-tree commit or ref to build (blank uses twrp-16.0)
         required: false
         type: string
 
@@ -30,7 +26,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: localhosts-A/device_xiaomi_dali
-          ref: twrp-16.0
+          ref: ${{ inputs.device_tree_ref || 'twrp-16.0' }}
           path: private-tree
           ssh-key: ${{ secrets.PRIVATE_DEVICE_TREE_DEPLOY_KEY }}
           persist-credentials: false
@@ -112,9 +108,6 @@ jobs:
           fi
 
       - name: Verify output and write a build summary
-        env:
-          TRIGGER_REPOSITORY: ${{ inputs.trigger_repository }}
-          TRIGGER_SHA: ${{ inputs.trigger_sha }}
         run: |
           image="$GITHUB_WORKSPACE/twrp/out/target/product/dali/vendor_boot.img"
           test -s "$image"
@@ -124,12 +117,6 @@ jobs:
             echo "- Output: vendor_boot recovery fragment"
             echo "- Size: $(stat -c '%s bytes' "$image")"
             echo "- SHA-256: $(sha256sum "$image" | cut -d ' ' -f1)"
-            if [[ "$TRIGGER_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-              echo "- Trigger repository: $TRIGGER_REPOSITORY"
-            fi
-            if [[ "$TRIGGER_SHA" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
-              echo "- Trigger commit: $TRIGGER_SHA"
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove private source and build output
