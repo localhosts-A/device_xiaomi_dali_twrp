@@ -1,0 +1,153 @@
+name: Build Dali TWRP recovery fragment
+
+on:
+  workflow_dispatch:
+    inputs:
+      trigger_repository:
+        description: Repository that requested this build (metadata only)
+        required: false
+        type: string
+      trigger_sha:
+        description: Commit SHA in the requesting repository (metadata only)
+        required: false
+        type: string
+      upload_fragment:
+        description: Upload the image to this public repository (may expose private ramdisk resources)
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dali-twrp-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build vendor_boot recovery fragment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out the private Dali device tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: localhosts-A/device_xiaomi_dali
+          ref: twrp-16.0
+          path: private-tree
+          ssh-key: ${{ secrets.PRIVATE_DEVICE_TREE_DEPLOY_KEY }}
+          persist-credentials: false
+          submodules: false
+
+      - name: Reclaim runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/local/share/powershell \
+            /usr/local/lib/node_modules
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+          sudo apt-get purge -y '^ghc-.*' '^dotnet-.*' '^llvm-.*' \
+            azure-cli google-chrome-stable firefox powershell mono-devel || true
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Install Android and TWRP build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git git-lfs gnupg gperf imagemagick libc6-dev-i386 \
+            lib32readline-dev lib32z1-dev libelf-dev libgl1-mesa-dev \
+            liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils \
+            lzop pngcrush python3 python-is-python3 repo rsync schedtool \
+            squashfs-tools unzip x11proto-core-dev libx11-dev xsltproc zip \
+            zlib1g-dev
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          repo version
+          df -h /
+
+      - name: Sync TWRP 16.0 source
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/twrp"
+          cd "$GITHUB_WORKSPACE/twrp"
+          repo init --depth=1 \
+            -u https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git \
+            -b twrp-16.0
+          repo sync -c --force-sync --no-clone-bundle --no-tags \
+            --optimized-fetch --prune -j"$(nproc --all)"
+          df -h /
+
+      - name: Place the private device tree
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/twrp/device/xiaomi"
+          cp -a "$GITHUB_WORKSPACE/private-tree" \
+            "$GITHUB_WORKSPACE/twrp/device/xiaomi/dali"
+          rm -rf "$GITHUB_WORKSPACE/twrp/device/xiaomi/dali/.git"
+          rm -rf "$GITHUB_WORKSPACE/private-tree"
+
+      - name: Apply the device's pinned TWRP source patch
+        run: |
+          recovery_project="$GITHUB_WORKSPACE/twrp/bootable/recovery"
+          device_tree="$GITHUB_WORKSPACE/twrp/device/xiaomi/dali"
+          git -C "$recovery_project" fetch --depth=1 \
+            https://github.com/TeamWin/android_bootable_recovery.git \
+            640eae012e65e9058baf8a8480ea5f0e4850fd3c
+          git -C "$recovery_project" checkout --detach FETCH_HEAD
+          git -C "$recovery_project" apply --check \
+            "$device_tree/patches/bootable-recovery.patch"
+          git -C "$recovery_project" apply \
+            "$device_tree/patches/bootable-recovery.patch"
+
+      - name: Build recovery fragment
+        run: |
+          cd "$GITHUB_WORKSPACE/twrp"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          source build/envsetup.sh
+          lunch twrp_dali bp2a eng
+          if ! mka vendorbootimage -j"$(nproc --all)" \
+              > "$RUNNER_TEMP/dali-build.log" 2>&1; then
+            echo "Build failed. Detailed compiler output was kept off the public Actions log." >&2
+            exit 1
+          fi
+
+      - name: Verify output and write a build summary
+        env:
+          TRIGGER_REPOSITORY: ${{ inputs.trigger_repository }}
+          TRIGGER_SHA: ${{ inputs.trigger_sha }}
+        run: |
+          image="$GITHUB_WORKSPACE/twrp/out/target/product/dali/vendor_boot.img"
+          test -s "$image"
+          {
+            echo "## Dali TWRP build"
+            echo
+            echo "- Output: vendor_boot recovery fragment"
+            echo "- Size: $(stat -c '%s bytes' "$image")"
+            echo "- SHA-256: $(sha256sum "$image" | cut -d ' ' -f1)"
+            if [[ "$TRIGGER_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+              echo "- Trigger repository: $TRIGGER_REPOSITORY"
+            fi
+            if [[ "$TRIGGER_SHA" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+              echo "- Trigger commit: $TRIGGER_SHA"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload recovery fragment
+        if: ${{ inputs.upload_fragment }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dali-vendor-boot-fragment-${{ github.run_number }}
+          path: twrp/out/target/product/dali/vendor_boot.img
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Remove private source and build output
+        if: ${{ always() }}
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-tree" "$GITHUB_WORKSPACE/twrp" \
+            "$RUNNER_TEMP/dali-build.log"
