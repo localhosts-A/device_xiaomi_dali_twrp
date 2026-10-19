@@ -101,11 +101,7 @@ jobs:
           export LC_ALL=C
           source build/envsetup.sh
           lunch twrp_dali bp2a eng
-          if ! mka vendorbootimage -j"$(nproc --all)" \
-              > "$RUNNER_TEMP/dali-build.log" 2>&1; then
-            echo "Build failed. Detailed compiler output was kept off the public Actions log." >&2
-            exit 1
-          fi
+          mka vendorbootimage -j"$(nproc --all)"
 
       - name: Verify output and write a build summary
         run: |
@@ -122,5 +118,4 @@ jobs:
       - name: Remove private source and build output
         if: ${{ always() }}
         run: |
-          rm -rf "$GITHUB_WORKSPACE/private-tree" "$GITHUB_WORKSPACE/twrp" \
-            "$RUNNER_TEMP/dali-build.log"
+          rm -rf "$GITHUB_WORKSPACE/private-tree" "$GITHUB_WORKSPACE/twrp"
