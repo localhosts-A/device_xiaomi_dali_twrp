@@ -63,6 +63,23 @@ jobs:
           repo version
           df -h /
 
+      - name: Restore ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-ccache-dali-twrp16-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-dali-twrp16-
+
+      - name: Configure ccache
+        run: |
+          mkdir -p "$HOME/.cache/ccache"
+          echo "USE_CCACHE=1" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_EXEC=$(command -v ccache)" >> "$GITHUB_ENV"
+          ccache -M 5G
+          ccache -s
+
       - name: Configure 32 GB compressed swap
         run: |
           sudo modprobe zram num_devices=1
@@ -114,6 +131,8 @@ jobs:
           export LC_ALL=C
           source build/envsetup.sh
           lunch twrp_dali bp2a eng
+          ccache -z
+          trap 'ccache -s || true' EXIT
           mka vendorbootimage -j"$(nproc --all)"
 
       - name: Verify output and write a build summary
@@ -127,6 +146,12 @@ jobs:
             echo "- Size: $(stat -c '%s bytes' "$image")"
             echo "- SHA-256: $(sha256sum "$image" | cut -d ' ' -f1)"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save ccache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-ccache-dali-twrp16-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Remove private source and build output
         if: ${{ always() }}
