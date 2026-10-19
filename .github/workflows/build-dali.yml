@@ -54,12 +54,25 @@ jobs:
             git git-lfs gnupg gperf imagemagick libc6-dev-i386 \
             lib32readline-dev lib32z1-dev libelf-dev libgl1-mesa-dev \
             liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils \
+            linux-modules-extra-$(uname -r) \
             lzop pngcrush python3 python-is-python3 repo rsync schedtool \
             squashfs-tools unzip x11proto-core-dev libx11-dev xsltproc zip \
             zlib1g-dev
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           repo version
+          df -h /
+
+      - name: Configure 32 GB compressed swap
+        run: |
+          sudo modprobe zram num_devices=1
+          device="$(sudo zramctl --find --size 32G)"
+          sudo mkswap "$device"
+          sudo swapon --priority 100 "$device"
+          echo "Configured 32 GiB zram swap on $device"
+          sudo zramctl "$device"
+          free -h
+          swapon --show
           df -h /
 
       - name: Sync TWRP 16.0 source
