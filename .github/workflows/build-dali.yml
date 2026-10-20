@@ -88,10 +88,11 @@ jobs:
             sudo zramctl "$device"
           else
             echo "::warning::zram is unavailable; using 8 GiB disk-backed swap"
-            sudo fallocate -l 8G /swapfile
-            sudo chmod 600 /swapfile
-            sudo mkswap /swapfile
-            sudo swapon --priority 10 /swapfile
+            swapfile="$RUNNER_TEMP/dali-build.swap"
+            sudo fallocate -l 8G "$swapfile"
+            sudo chmod 600 "$swapfile"
+            sudo mkswap "$swapfile"
+            sudo swapon --priority 10 "$swapfile"
           fi
           free -h
           swapon --show
@@ -162,6 +163,6 @@ jobs:
       - name: Remove private source and build output
         if: ${{ always() }}
         run: |
-          sudo swapoff /swapfile 2>/dev/null || true
-          sudo rm -f /swapfile
+          sudo swapoff "$RUNNER_TEMP/dali-build.swap" 2>/dev/null || true
+          sudo rm -f "$RUNNER_TEMP/dali-build.swap"
           rm -rf "$GITHUB_WORKSPACE/private-tree" "$GITHUB_WORKSPACE/twrp"
