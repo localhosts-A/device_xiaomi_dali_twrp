@@ -54,7 +54,6 @@ jobs:
             git git-lfs gnupg gperf imagemagick libc6-dev-i386 \
             lib32readline-dev lib32z1-dev libelf-dev libgl1-mesa-dev \
             liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils \
-            linux-modules-extra-$(uname -r) \
             lzop pngcrush python3 python-is-python3 repo rsync schedtool \
             squashfs-tools unzip x11proto-core-dev libx11-dev xsltproc zip \
             zlib1g-dev
@@ -80,14 +79,20 @@ jobs:
           ccache -M 5G
           ccache -s
 
-      - name: Configure 32 GB compressed swap
+      - name: Configure swap
         run: |
-          sudo modprobe zram num_devices=1
-          device="$(sudo zramctl --find --size 32G)"
-          sudo mkswap "$device"
-          sudo swapon --priority 100 "$device"
-          echo "Configured 32 GiB zram swap on $device"
-          sudo zramctl "$device"
+          if sudo modprobe zram num_devices=1 && device="$(sudo zramctl --find --size 32G)"; then
+            sudo mkswap "$device"
+            sudo swapon --priority 100 "$device"
+            echo "Configured 32 GiB zram swap on $device"
+            sudo zramctl "$device"
+          else
+            echo "::warning::zram is unavailable; using 8 GiB disk-backed swap"
+            sudo fallocate -l 8G /swapfile
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon --priority 10 /swapfile
+          fi
           free -h
           swapon --show
           df -h /
@@ -157,4 +162,6 @@ jobs:
       - name: Remove private source and build output
         if: ${{ always() }}
         run: |
+          sudo swapoff /swapfile 2>/dev/null || true
+          sudo rm -f /swapfile
           rm -rf "$GITHUB_WORKSPACE/private-tree" "$GITHUB_WORKSPACE/twrp"
