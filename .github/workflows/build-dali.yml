@@ -145,14 +145,18 @@ jobs:
         id: restore-source-objects
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: twrp/.repo/project-objects
-          key: ${{ runner.os }}-repo-objects-dali-twrp16-v1
+          path: ~/.cache/dali-source-objects
+          key: ${{ runner.os }}-repo-objects-dali-twrp16-v2-bounded-2g
 
       - name: Sync TWRP 16.0 source
         id: sync-source
         run: |
           mkdir -p "$GITHUB_WORKSPACE/twrp"
           cd "$GITHUB_WORKSPACE/twrp"
+          if [ -d "$HOME/.cache/dali-source-objects" ]; then
+            mkdir -p .repo/project-objects
+            cp -a "$HOME/.cache/dali-source-objects/." .repo/project-objects/
+          fi
           repo init --depth=1 \
             -u https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git \
             -b twrp-16.0
@@ -160,12 +164,42 @@ jobs:
             --optimized-fetch --prune -j"$(nproc --all)"
           df -h /
 
+      - name: Prepare a bounded public source cache
+        if: ${{ !cancelled() && steps.sync-source.outcome == 'success' && steps.restore-source-objects.outputs.cache-hit != 'true' }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import shutil
+
+          source = Path(os.environ['GITHUB_WORKSPACE']) / 'twrp/.repo/project-objects'
+          destination = Path.home() / '.cache/dali-source-objects'
+          destination.mkdir(parents=True, exist_ok=True)
+          candidates = []
+          for repository in source.rglob('*.git'):
+              if not (repository / 'objects').is_dir():
+                  continue
+              size = sum(path.stat().st_size for path in repository.rglob('*')
+                         if path.is_file() and not path.is_symlink())
+              candidates.append((size, repository))
+          used = count = 0
+          for size, repository in sorted(candidates):
+              if used + size > 2 * 1024**3:
+                  continue
+              target = destination / repository.relative_to(source)
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copytree(repository, target, symlinks=True, dirs_exist_ok=True)
+              used += size
+              count += 1
+          print(f'Prepared {count} public repositories, {used} bytes (2 GiB limit)')
+          PY
+
       - name: Save public Android Git objects
         if: ${{ !cancelled() && steps.sync-source.outcome == 'success' && steps.restore-source-objects.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: twrp/.repo/project-objects
-          key: ${{ runner.os }}-repo-objects-dali-twrp16-v1
+          path: ~/.cache/dali-source-objects
+          key: ${{ runner.os }}-repo-objects-dali-twrp16-v2-bounded-2g
 
       - name: Place the private device tree
         run: |
