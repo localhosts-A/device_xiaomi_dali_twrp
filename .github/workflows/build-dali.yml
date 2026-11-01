@@ -141,7 +141,15 @@ jobs:
           swapon --show
           df -h /
 
+      - name: Restore public Android Git object cache
+        id: restore-source-objects
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: twrp/.repo/project-objects
+          key: ${{ runner.os }}-repo-objects-dali-twrp16-v1
+
       - name: Sync TWRP 16.0 source
+        id: sync-source
         run: |
           mkdir -p "$GITHUB_WORKSPACE/twrp"
           cd "$GITHUB_WORKSPACE/twrp"
@@ -151,6 +159,13 @@ jobs:
           repo sync -c --force-sync --no-clone-bundle --no-tags \
             --optimized-fetch --prune -j"$(nproc --all)"
           df -h /
+
+      - name: Save public Android Git objects
+        if: ${{ !cancelled() && steps.sync-source.outcome == 'success' && steps.restore-source-objects.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: twrp/.repo/project-objects
+          key: ${{ runner.os }}-repo-objects-dali-twrp16-v1
 
       - name: Place the private device tree
         run: |
@@ -169,6 +184,10 @@ jobs:
             https://github.com/TeamWin/android_bootable_recovery.git \
             640eae012e65e9058baf8a8480ea5f0e4850fd3c
           git -C "$recovery_project" checkout --detach FETCH_HEAD
+          git -C "$GITHUB_WORKSPACE/twrp/vendor/twrp" fetch --depth=1 \
+            https://github.com/TWRP-Test/android_vendor_twrp.git \
+            f7e60a205cfe0a28cadaa2938ad2c79768ecc38c
+          git -C "$GITHUB_WORKSPACE/twrp/vendor/twrp" checkout --detach FETCH_HEAD
           sh "$device_tree/tools/apply-source-patches.sh" "$GITHUB_WORKSPACE/twrp"
 
       - name: Build recovery fragment
